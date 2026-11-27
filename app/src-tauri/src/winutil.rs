@@ -27,7 +27,8 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Accessibility::{IUIAutomation, TreeScope_Subtree};
 use windows::Win32::UI::Shell::{FOLDERID_SavedGames, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, InternalGetWindowText, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    EnumChildWindows, EnumWindows, GetClassNameW, InternalGetWindowText, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, ShowWindow,
 };
 
 const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4; // READ | WRITE | DELETE
@@ -220,6 +221,28 @@ unsafe extern "system" fn child_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 /// Texts of a dialog's child controls (Static, Button, ...), read without sending messages.
 /// Read only: nothing is clicked or typed. Starts with the window's own title.
+/// Minimizes another program's window without activating it (ROADMAP #12). Plain window
+/// management, as when the user clicks minimize. Returns whether it is minimized afterwards
+/// (Windows may refuse for a window of a process running as administrator).
+pub fn minimize_window(hwnd: isize) -> bool {
+    unsafe {
+        let h = HWND(hwnd as *mut core::ffi::c_void);
+        let _ = ShowWindow(h, SW_SHOWMINNOACTIVE);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        IsIconic(h).as_bool()
+    }
+}
+
+/// Shows a minimized window again without stealing focus.
+pub fn restore_window(hwnd: isize) {
+    unsafe {
+        let h = HWND(hwnd as *mut core::ffi::c_void);
+        if IsIconic(h).as_bool() {
+            let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
+        }
+    }
+}
+
 pub fn child_texts(hwnd: isize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     unsafe {
@@ -292,6 +315,30 @@ pub fn anonymize(s: &str) -> String {
 mod tests {
     /// Reads a message box (#32770 + Static) owned by another process, like ED's updater dialog.
     /// `cargo test --lib reads_child_texts_of_another_process -- --ignored --nocapture`
+    /// Opens a MessageBox in another process (same rights as Hangar), minimizes it and shows it
+    /// again. The real updater window runs as administrator: that case is tested by the owner.
+    /// `cargo test --lib minimizes_window_of_another_process -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn minimizes_window_of_another_process() {
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Hangar window test', 'Hangar test') | Out-Null"])
+            .spawn()
+            .unwrap();
+        let mut result = None;
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if let Some(w) = super::windows_of(&[child.id()]).into_iter().find(|w| w.class == "#32770") {
+                let min = super::minimize_window(w.hwnd);
+                super::restore_window(w.hwnd);
+                result = Some(min);
+                break;
+            }
+        }
+        let _ = child.kill();
+        assert_eq!(result, Some(true), "the window was found and minimized");
+    }
+
     #[test]
     #[ignore]
     fn reads_child_texts_of_another_process() {

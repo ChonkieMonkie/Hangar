@@ -11,7 +11,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import Icon from "$lib/components/Icon.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import { api, type FolderStats, type Settings, type WallThumb, type RecordingsOverview, type ExportSummary } from "$lib/api";
+  import { api, type FolderStats, type Settings, type WallThumb, type RecordingsOverview, type ExportSummary, type StorageOverview, type CompressionEstimate } from "$lib/api";
   import { bytes } from "$lib/format";
   import { hangar, loadSettings, saveSettings } from "$lib/state.svelte";
 
@@ -20,8 +20,8 @@
   let thumbs = $state<WallThumb[]>([]);
   let error = $state<string | null>(null);
   let saved = $state(false);
-  type Section = "wall" | "launch" | "research" | "about";
-  const SECTIONS: Section[] = ["wall", "launch", "research", "about"];
+  type Section = "wall" | "launch" | "storage" | "research" | "about";
+  const SECTIONS: Section[] = ["wall", "launch", "storage", "research", "about"];
   let section = $state<Section>("wall");
   // /settings?section=about (the logo in the menu links here)
   $effect(() => {
@@ -58,8 +58,9 @@
   async function refreshWall() {
     if (!s) return;
     const folders = $state.snapshot(s.wallFolders);
-    stats = await api.wallStats(folders, s.wallSubfolders).catch(() => []);
-    thumbs = await api.wallThumbs(folders, s.wallSubfolders, 8).catch(() => []);
+    const hdr = s.wallHdr !== "skip";
+    stats = await api.wallStats(folders, s.wallSubfolders, hdr).catch(() => []);
+    thumbs = await api.wallThumbs(folders, s.wallSubfolders, 8, hdr).catch(() => []);
   }
   let loadedOnce = false;
   $effect(() => {
@@ -79,6 +80,7 @@
 
   let total = $derived(stats.filter((x, i) => s?.wallFolders[i]?.enabled).reduce((a, b) => a + b.pictures, 0));
   let skipped = $derived(stats.reduce((a, b) => a + b.skipped, 0));
+  let hdrCount = $derived(stats.filter((x, i) => s?.wallFolders[i]?.enabled).reduce((a, b) => a + (b.hdr ?? 0), 0));
   const statFor = (path: string) => stats.find((x) => x.path === path);
 
   const modes = [
@@ -129,6 +131,47 @@
     await refreshRec();
   }
 
+  // ---------------------------------------------------------------- Storage (compression, ROADMAP #10)
+  let storage = $state<StorageOverview | null>(null);
+  let estimate = $state<CompressionEstimate | null>(null);
+  let estimating = $state(false);
+  let vaultResult = $state<string | null>(null);
+  $effect(() => {
+    if (section === "storage" && !storage) void api.storageOverview().then((x) => (storage = x)).catch(() => {});
+  });
+  const LEVELS = [
+    { v: 1, label: "Fastest" },
+    { v: 3, label: "Fast (recommended)" },
+    { v: 9, label: "Balanced" },
+    { v: 15, label: "Small" },
+    { v: 19, label: "Smallest (slow)" },
+  ];
+  function setCompression(fn: (c: Settings["compression"]) => void, delay = 0) {
+    if (!s) return;
+    fn(s.compression);
+    estimate = null;
+    persist(delay);
+  }
+  async function runEstimate() {
+    if (!s) return;
+    estimating = true;
+    estimate = await api.compressionEstimate($state.snapshot(s.compression) as Settings["compression"]).catch((e) => {
+      error = String(e);
+      return null;
+    });
+    estimating = false;
+  }
+  async function compressVaultNow() {
+    vaultResult = null;
+    try {
+      const [before, after] = await api.vaultCompressAll();
+      vaultResult = before ? `Compressed ${bytes(before)} to ${bytes(after)}.` : "Nothing left to compress.";
+      storage = await api.storageOverview().catch(() => storage);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   // ---------------------------------------------------------------- About
   let version = $state("");
   let shown = $state<"license" | "notices" | null>(null);
@@ -173,6 +216,7 @@
     <nav class="sections" aria-label="Settings sections">
       <button class:on={section === "wall"} onclick={() => (section = "wall")}>Hangar wall</button>
       <button class:on={section === "launch"} onclick={() => (section = "launch")}>Launch presets</button>
+      <button class:on={section === "storage"} onclick={() => (section = "storage")}>Storage</button>
       <button class:on={section === "research"} onclick={() => (section = "research")}>ETA research</button>
       <button class:on={section === "about"} onclick={() => (section = "about")}>About</button>
     </nav>
@@ -195,7 +239,7 @@
                 <Switch checked={f.enabled} label={`Use ${f.path}`} onchange={(v) => { f.enabled = v; persist(); }} />
                 <div class="fpath">
                   <span class="mono">{f.path}</span>
-                  <span class="faint small">{st ? (st.exists ? `${st.pictures} pictures${st.skipped ? ` · ${st.skipped} HDR skipped` : ""}` : "Folder not found") : "…"}</span>
+                  <span class="faint small">{st ? (st.exists ? `${st.pictures} pictures${st.hdr ? ` · ${st.hdr} HDR` : ""}${st.skipped ? ` · ${st.skipped} HDR skipped` : ""}` : "Folder not found") : "…"}</span>
                 </div>
                 <button class="btn small" onclick={() => api.revealPath(f.path)} aria-label="Open folder"><Icon name="folder" size={16} /></button>
                 <button class="btn small danger" onclick={() => { s!.wallFolders.splice(i, 1); persist(); }} aria-label="Remove folder"><Icon name="cross" size={16} /></button>
@@ -216,7 +260,17 @@
               </button>
             {/each}
           </div>
-          <div class="faint small">{total} pictures · JPG, PNG, BMP, WebP{skipped ? ` · ${skipped} HDR (.jxr) skipped` : ""}</div>
+          <div class="faint small">{total} pictures · JPG, PNG, BMP, WebP, HDR (JPEG XR, HDR PNG){hdrCount ? ` · ${hdrCount} HDR, shown tone-mapped` : ""}{skipped ? ` · ${skipped} HDR skipped` : ""}</div>
+          <div class="hdrrow">
+            <div>
+              <div class="mname">HDR screenshots</div>
+              <div class="faint small">Game Bar and NVIDIA save HDR captures as JPEG XR. Hangar can't show HDR, so it converts them to normal brightness.</div>
+            </div>
+            <div class="seg" role="radiogroup" aria-label="HDR screenshots">
+              <button role="radio" aria-checked={s.wallHdr !== "skip"} class:on={s.wallHdr !== "skip"} onclick={() => { s!.wallHdr = "tonemap"; persist(); }}>Tone-map</button>
+              <button role="radio" aria-checked={s.wallHdr === "skip"} class:on={s.wallHdr === "skip"} onclick={() => { s!.wallHdr = "skip"; persist(); }}>Skip</button>
+            </div>
+          </div>
           {#if thumbs.length}
             <div class="thumbs">
               {#each thumbs as t}
@@ -227,6 +281,82 @@
               {/each}
             </div>
           {/if}
+        </section>
+      {:else if section === "storage"}
+        <section class="card">
+          <div>
+            <h2>Storage</h2>
+            <p class="muted small">How Hangar stores backups and switched-off mods. Changes apply to new backups and to mods switched off from now on. What is already stored stays readable either way.</p>
+          </div>
+          <div class="usage">
+            <div><div class="label">Backups</div><div class="mono">{storage ? (storage.backupBytes == null ? "No destination" : bytes(storage.backupBytes)) : "…"}</div></div>
+            <div><div class="label">Mod vault</div><div class="mono">{storage ? bytes(storage.vaultBytes) : "…"}</div></div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="label">Compression</div>
+          <div class="toggle">
+            <Switch checked={s.compression.backups} label="Compress backups" onchange={(v) => setCompression((c) => (c.backups = v))} />
+            <div>
+              <div class="tname">Compress backups</div>
+              <div class="faint small">On by default. Each file is compressed by itself, so single files can still be restored and checked.</div>
+            </div>
+          </div>
+          <div class="toggle">
+            <Switch checked={s.compression.vault} label="Compress switched-off mods" onchange={(v) => setCompression((c) => (c.vault = v))} />
+            <div>
+              <div class="tname">Compress switched-off mods</div>
+              <div class="faint small">Off by default. Saves space in the vault, but switching a mod on takes longer because it has to be unpacked.</div>
+            </div>
+          </div>
+          {#if s.compression.vault}
+            <div class="formrow">
+              <label for="vmax">Only mods up to</label>
+              <input id="vmax" class="num" type="number" min="0" step="0.5" placeholder="any size" value={s.compression.vaultMaxGb ?? ""}
+                oninput={(e) => setCompression((c) => (c.vaultMaxGb = e.currentTarget.value === "" ? null : Number(e.currentTarget.value)), 600)} />
+              <span class="faint small">GB (leave empty for any size)</span>
+              <button class="btn small" onclick={compressVaultNow} disabled={!!hangar.job}>Compress switched-off mods now</button>
+              {#if vaultResult}<span class="small">{vaultResult}</span>{/if}
+            </div>
+          {/if}
+        </section>
+        <section class="card">
+          <div class="label">Advanced</div>
+          <div class="formgrid">
+            <label for="algo">Algorithm</label>
+            <select id="algo" value={s.compression.algorithm} onchange={(e) => setCompression((c) => (c.algorithm = e.currentTarget.value as "zstd" | "none"))}>
+              <option value="zstd">Zstandard (zstd)</option>
+              <option value="none">None (store files as they are)</option>
+            </select>
+            <label for="level">Effort</label>
+            <div class="levelrow">
+              <input id="level" type="range" min="1" max="19" value={s.compression.level} disabled={s.compression.algorithm === "none"}
+                oninput={(e) => setCompression((c) => (c.level = Number(e.currentTarget.value)), 400)} />
+              <span class="mono small">{s.compression.level} · {(LEVELS.filter((l) => l.v <= s!.compression.level).pop() ?? LEVELS[0]).label}</span>
+            </div>
+            <label for="threads">Threads</label>
+            <select id="threads" value={String(s.compression.threads)} onchange={(e) => setCompression((c) => (c.threads = Number(e.currentTarget.value)))}>
+              <option value="0">Automatic (up to 4)</option>
+              {#each [1, 2, 4, 8] as n}<option value={String(n)}>{n}</option>{/each}
+            </select>
+            <label for="minsize">Smallest file to compress</label>
+            <div class="levelrow">
+              <input id="minsize" class="num" type="number" min="0" step="1" value={Math.round(s.compression.minSize / 1024)}
+                oninput={(e) => setCompression((c) => (c.minSize = Math.max(0, Number(e.currentTarget.value)) * 1024), 600)} />
+              <span class="faint small">KB</span>
+            </div>
+            <label for="skip">Already compressed (skipped)</label>
+            <input id="skip" class="mono" value={s.compression.skipExtensions.join(", ")}
+              onchange={(e) => setCompression((c) => (c.skipExtensions = e.currentTarget.value.split(/[\s,]+/).map((x) => x.replace(/^\./, "").toLowerCase()).filter(Boolean)))} />
+          </div>
+          <div class="formrow">
+            <button class="btn small" onclick={runEstimate} disabled={estimating || s.compression.algorithm === "none"}>{estimating ? "Estimating…" : "Estimate with my files"}</button>
+            {#if estimate && estimate.sampled}
+              <span class="small">A sample of {bytes(estimate.sampled)} from your backup folders becomes about <b>{bytes(estimate.compressed)}</b> ({Math.round((1 - estimate.compressed / estimate.sampled) * 100)} % smaller) at about {bytes(estimate.sampled / Math.max(estimate.seconds, 0.001))}/s. This is an estimate.</span>
+            {:else if estimate}
+              <span class="faint small">No files to sample. Choose backup folders first.</span>
+            {/if}
+          </div>
         </section>
       {:else if section === "research"}
         <section class="card">
@@ -376,6 +506,12 @@
   .notice { display: flex; gap: 8px; align-items: center; font-size: 13px; }
   .notice.bad { color: var(--warning-soft); }
   .notice.good { color: var(--ink); flex-wrap: wrap; }
+  .hdrrow { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .hdrrow > div:first-child { flex: 1 1 280px; display: flex; flex-direction: column; gap: 4px; }
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+  .seg button { min-height: 36px; padding: 0 14px; border: 0; background: var(--raised); color: var(--ink-2); font: inherit; font-weight: 500; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line-2); }
+  .seg button.on { background: var(--phosphor-bg); color: var(--phosphor-soft); }
   .card p { margin: 6px 0 0; line-height: 1.5; }
   .toggle { display: flex; gap: 14px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 8px; }
   .tname { font-weight: 600; }
@@ -390,5 +526,13 @@
   .logo { fill: none; stroke: var(--phosphor); stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; flex: none; }
   .warranty { max-width: 680px; }
   .btn.active { border-color: var(--phosphor); }
+  .usage { display: flex; gap: 32px; flex-wrap: wrap; }
+  .usage .mono { font-size: 20px; margin-top: 6px; }
+  .formrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .formgrid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 10px 16px; align-items: center; }
+  .formgrid select, .formgrid input:not([type="range"]), .num { min-height: 36px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--inset); color: var(--ink); font: inherit; font-size: 13px; }
+  .num { width: 110px; }
+  .levelrow { display: flex; gap: 12px; align-items: center; }
+  .levelrow input[type="range"] { flex: 1; max-width: 320px; accent-color: var(--phosphor); }
   .longtext { max-height: 420px; overflow: auto; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--well); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; color: var(--ink-soft); }
 </style>

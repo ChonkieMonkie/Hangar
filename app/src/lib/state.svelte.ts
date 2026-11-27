@@ -41,7 +41,7 @@ export async function saveSettings(next: Settings): Promise<Settings> {
 }
 
 function wallKey(s: Settings | null): string {
-  return s ? JSON.stringify([s.wallFolders, s.wallMode, s.wallSubfolders, s.wallFavorite]) : "";
+  return s ? JSON.stringify([s.wallFolders, s.wallMode, s.wallSubfolders, s.wallFavorite, s.wallHdr]) : "";
 }
 
 /** Loads a wall picture. `next` = skip the one shown now. */

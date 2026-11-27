@@ -18,7 +18,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{now_unix, slug, write_json};
+use crate::compress;
+use crate::settings::{Compression, now_unix, slug, write_json};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +93,17 @@ const PACKAGE_ROOTS: [&str; 6] = ["mods", "scripts", "liveries", "kneeboard", "m
 pub struct ModStore {
     pub saved_games: PathBuf,
     pub data: PathBuf,
+    /// Compress the files of switched-off mods in the vault (Settings > Storage, off by default).
+    pub vault_compression: Option<Compression>,
+}
+
+/// How a mod is removed (B-030).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RemoveMode {
+    /// Windows Recycle Bin (the default; can be undone).
+    RecycleBin,
+    /// Deleted for good (Shift + the confirmation phrase).
+    Permanent,
 }
 
 fn mtime_of(md: &std::fs::Metadata) -> i64 {
@@ -161,7 +173,65 @@ fn prune_empty(start: &Path, stop: &Path) {
 
 impl ModStore {
     pub fn new(saved_games: impl Into<PathBuf>, data: impl Into<PathBuf>) -> Self {
-        ModStore { saved_games: saved_games.into(), data: data.into() }
+        ModStore { saved_games: saved_games.into(), data: data.into(), vault_compression: None }
+    }
+
+    pub fn with_compression(mut self, cfg: &Compression) -> Self {
+        self.vault_compression = (cfg.vault && cfg.algorithm != "none").then(|| cfg.clone());
+        self
+    }
+
+    /// The file of a mod in the vault: plain, or compressed (".zst"), if either exists.
+    fn vault_file(&self, id: &str, rel: &Path) -> Option<PathBuf> {
+        let plain = self.vault_dir(id).join(rel);
+        if plain.exists() {
+            return Some(plain);
+        }
+        let z = compress::zst_path(&plain);
+        z.exists().then_some(z)
+    }
+
+    /// Compresses the vault files of a switched-off mod (if vault compression is on and the mod
+    /// is within the size limit). Returns (bytes before, bytes after). Each file is written as
+    /// ".zst" first and the plain one removed after, so an interruption loses nothing.
+    pub fn compress_vault(&self, id: &str) -> Result<(u64, u64), String> {
+        let Some(cfg) = self.vault_compression.clone() else { return Ok((0, 0)) };
+        let m = self.load(id)?;
+        if m.enabled {
+            return Ok((0, 0));
+        }
+        let total: u64 = m.files.iter().map(|f| f.size).sum();
+        if cfg.vault_max_gb.is_some_and(|gb| total as f64 > gb * 1e9) {
+            return Ok((0, 0));
+        }
+        let vault = self.vault_dir(id);
+        let (mut before, mut after) = (0u64, 0u64);
+        for f in &m.files {
+            let rel = safe_rel(&f.path).ok_or("bad path")?;
+            let plain = vault.join(&rel);
+            let z = compress::zst_path(&plain);
+            if !plain.exists() {
+                continue; // already compressed
+            }
+            let size = std::fs::metadata(&plain).map(|m| m.len()).unwrap_or(0);
+            if !compress::worth_it(&cfg, &plain, size) {
+                continue;
+            }
+            let packed = compress::compress_file(&cfg, &plain, &z).map_err(|e| format!("Could not compress {}: {e}", f.path))?;
+            if packed >= size - size / 32 {
+                let _ = std::fs::remove_file(&z); // not worth it
+                continue;
+            }
+            std::fs::remove_file(&plain).map_err(|e| e.to_string())?;
+            before += size;
+            after += packed;
+        }
+        Ok((before, after))
+    }
+
+    /// Bytes the vault uses on disk (compressed files count as stored).
+    pub fn vault_bytes(&self) -> u64 {
+        crate::winutil::folder_size(&self.data.join("vault"))
     }
 
     fn manifest_path(&self, id: &str) -> PathBuf {
@@ -239,16 +309,24 @@ impl ModStore {
                 push(format!("{place}/{name}"), name.trim_end_matches(".lua").to_string(), kind, &e.path());
             }
         }
-        // Liveries/<unit>/<livery>
+        // Liveries/<unit>: one row per unit (all its liveries), unless Hangar manages single
+        // liveries of that unit (then those stay as they are)
         for unit in std::fs::read_dir(self.saved_games.join("Liveries")).into_iter().flatten().flatten() {
             if !unit.path().is_dir() {
                 continue;
             }
             let u = unit.file_name().to_string_lossy().into_owned();
-            for liv in std::fs::read_dir(unit.path()).into_iter().flatten().flatten() {
-                if liv.path().is_dir() {
-                    let l = liv.file_name().to_string_lossy().into_owned();
-                    push(format!("Liveries/{u}/{l}"), format!("{l} ({u})"), "Livery", &liv.path());
+            let prefix = format!("liveries/{}/", u.to_ascii_lowercase());
+            let single: Vec<String> = managed.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+            if single.is_empty() {
+                let n = std::fs::read_dir(unit.path()).into_iter().flatten().flatten().filter(|e| e.path().is_dir()).count();
+                push(format!("Liveries/{u}"), format!("{u} liveries ({n})"), "Livery", &unit.path());
+            } else {
+                for liv in std::fs::read_dir(unit.path()).into_iter().flatten().flatten() {
+                    if liv.path().is_dir() {
+                        let l = liv.file_name().to_string_lossy().into_owned();
+                        push(format!("Liveries/{u}/{l}"), format!("{l} ({u})"), "Livery", &liv.path());
+                    }
                 }
             }
         }
@@ -298,16 +376,38 @@ impl ModStore {
     /// Copies a mod package (folder or .zip) into Saved Games and tracks it. The package must
     /// contain one of the usual top folders (Mods, Scripts, Liveries, ...), possibly one level
     /// down. Refuses to overwrite existing files.
-    pub fn add_package(&self, package: &Path) -> Result<Manifest, String> {
+    pub fn add_package(&self, package: &Path, progress: &mut dyn FnMut(usize, usize, &str)) -> Result<Manifest, String> {
         let entries = package_entries(package)?;
-        let base = package_base(&entries).ok_or("Can't tell where this mod goes: it has no Mods, Scripts, Liveries or Kneeboard folder.")?;
-        let files: Vec<(String, String)> = entries
-            .iter()
-            .filter_map(|e| e.strip_prefix(&base).map(|r| (e.clone(), r.trim_start_matches('/').to_string())))
-            .filter(|(_, r)| !r.is_empty() && !r.ends_with('/'))
-            // only files under the usual DCS folders; readmes etc. stay out of Saved Games
-            .filter(|(_, r)| r.contains('/') && PACKAGE_ROOTS.contains(&r.split('/').next().unwrap_or("").to_ascii_lowercase().as_str()))
-            .collect();
+        let layout = package_layout(&entries)
+            .ok_or("Can't tell where this mod goes: it has no Mods, Scripts, Liveries or Kneeboard folder, and no entry.lua.")?;
+        let (files, display_name): (Vec<(String, String)>, Option<String>) = match &layout {
+            Layout::Rooted(base) => (
+                entries
+                    .iter()
+                    .filter_map(|e| e.strip_prefix(base.as_str()).map(|r| (e.clone(), r.trim_start_matches('/').to_string())))
+                    .filter(|(_, r)| !r.is_empty() && !r.ends_with('/'))
+                    // only files under the usual DCS folders; readmes etc. stay out of Saved Games
+                    .filter(|(_, r)| r.contains('/') && PACKAGE_ROOTS.contains(&r.split('/').next().unwrap_or("").to_ascii_lowercase().as_str()))
+                    .collect(),
+                None,
+            ),
+            Layout::ModFolder { prefix, folder } => {
+                // a bare mod folder (entry.lua at its top, e.g. CurrentHill asset packs): the whole
+                // folder goes to Mods/<aircraft|tech>/<folder>, as its readme says
+                let entry = read_package_file(package, &format!("{prefix}entry.lua")).unwrap_or_default();
+                let place = if entry.contains("make_flyable") { "Mods/aircraft" } else { "Mods/tech" };
+                let folder = folder.clone().unwrap_or_else(|| package.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Mod".into()));
+                (
+                    entries
+                        .iter()
+                        .filter_map(|e| e.strip_prefix(prefix.as_str()).map(|r| (e.clone(), r.to_string())))
+                        .filter(|(_, r)| !r.is_empty() && !r.ends_with('/'))
+                        .map(|(e, r)| (e, format!("{place}/{folder}/{r}")))
+                        .collect(),
+                    lua_display_name(&entry),
+                )
+            }
+        };
         if files.is_empty() {
             return Err("The package has no files.".into());
         }
@@ -318,14 +418,16 @@ impl ModStore {
             }
         }
         let root = mod_root(files.iter().map(|(_, r)| r.as_str()));
-        let name = root.rsplit('/').next().unwrap_or("Mod").trim_end_matches(".lua").to_string();
+        let name = display_name.unwrap_or_else(|| root.rsplit('/').next().unwrap_or("Mod").trim_end_matches(".lua").to_string());
+        let total = files.len();
         let kind = kind_of(&root);
         // journal the copies so an interruption can be cleaned up
         let id = self.new_id(&name);
         let mut journal = Journal::open(&self.journal_path(&id))?;
         let res = (|| -> Result<(), String> {
             if package.is_dir() {
-                for (src, rel) in &files {
+                for (i, (src, rel)) in files.iter().enumerate() {
+                    progress(i, total, rel);
                     let to = self.saved_games.join(safe_rel(rel).unwrap());
                     std::fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
                     std::fs::copy(package.join(safe_rel(src).ok_or("bad path")?), &to).map_err(|e| e.to_string())?;
@@ -334,7 +436,8 @@ impl ModStore {
             } else {
                 let f = std::fs::File::open(package).map_err(|e| e.to_string())?;
                 let mut zip = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
-                for (src, rel) in &files {
+                for (i, (src, rel)) in files.iter().enumerate() {
+                    progress(i, total, rel);
                     let to = self.saved_games.join(safe_rel(rel).unwrap());
                     std::fs::create_dir_all(to.parent().unwrap()).map_err(|e| e.to_string())?;
                     let mut entry = zip.by_name(src).map_err(|e| e.to_string())?;
@@ -390,6 +493,7 @@ impl ModStore {
             let from = self.saved_games.join(&rel);
             if from.exists() {
                 let to = vault.join(&rel);
+                let _ = std::fs::remove_file(compress::zst_path(&to)); // stale compressed copy
                 if let Err(e) = move_file(&from, &to) {
                     drop(journal);
                     self.recover();
@@ -421,6 +525,9 @@ impl ModStore {
         m.displaced.clear();
         self.save(&m)?;
         journal.finish();
+        if self.vault_compression.is_some() {
+            let _ = self.compress_vault(id); // best effort: the plain files stay if it fails
+        }
         Ok(m)
     }
 
@@ -432,12 +539,18 @@ impl ModStore {
             return Ok(m);
         }
         let vault = self.vault_dir(id);
-        let missing: Vec<&str> = m.files.iter().filter(|f| !vault.join(&f.path).exists()).map(|f| f.path.as_str()).collect();
+        let missing: Vec<&str> = m
+            .files
+            .iter()
+            .filter(|f| safe_rel(&f.path).and_then(|r| self.vault_file(id, &r)).is_none())
+            .map(|f| f.path.as_str())
+            .collect();
         if !missing.is_empty() {
             return Err(format!("{} file(s) are missing from the vault, e.g. {}", missing.len(), missing[0]));
         }
         let mut journal = Journal::open(&self.journal_path(id))?;
         let mut displaced = Vec::new();
+        let mut unpacked: Vec<PathBuf> = Vec::new();
         for f in &m.files {
             let rel = safe_rel(&f.path).ok_or("bad path")?;
             let target = self.saved_games.join(&rel);
@@ -451,7 +564,21 @@ impl ModStore {
                 journal.moved(&target, &aside)?;
                 displaced.push(f.path.clone());
             }
-            let from = vault.join(&rel);
+            let from = self.vault_file(id, &rel).unwrap_or_else(|| vault.join(&rel));
+            if compress::is_zst(&from) && !vault.join(&rel).exists() {
+                // compressed in the vault: unpack into place, keep the .zst until all is done
+                if let Err(e) = compress::decode_to(&from, &target) {
+                    drop(journal);
+                    self.recover();
+                    return Err(format!("Could not unpack {}: {e}", f.path));
+                }
+                journal.created(&target)?;
+                if let Ok(file) = std::fs::File::options().write(true).open(&target) {
+                    let _ = file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(f.mtime.max(0) as u64));
+                }
+                unpacked.push(from);
+                continue;
+            }
             if let Err(e) = move_file(&from, &target) {
                 drop(journal);
                 self.recover();
@@ -472,6 +599,12 @@ impl ModStore {
         m.displaced = displaced;
         self.save(&m)?;
         journal.finish();
+        for z in unpacked {
+            let _ = std::fs::remove_file(&z);
+            if let Some(parent) = z.parent() {
+                prune_empty(parent, &vault);
+            }
+        }
         Ok(m)
     }
 
@@ -484,12 +617,51 @@ impl ModStore {
         std::fs::remove_file(self.manifest_path(id)).map_err(|e| e.to_string())
     }
 
-    /// Deletes a mod's files (wherever they are), puts back files it covered, forgets it.
-    pub fn remove(&self, id: &str) -> Result<(), String> {
+    /// Removes a mod: puts back files it covered, then sends its files to the Recycle Bin
+    /// (default) or deletes them for good, and forgets it (B-030).
+    /// A mod that is on is recycled from Saved Games, so "Restore" in the Recycle Bin puts it
+    /// back where it was. A mod that is off is recycled from the vault (unpacked first if it
+    /// was compressed, so the files stay usable).
+    pub fn remove(&self, id: &str, mode: RemoveMode) -> Result<(), String> {
         let m = self.load(id)?;
-        let m = if m.enabled { self.disable(id, true)? } else { m };
         let vault = self.vault_dir(&m.id);
-        std::fs::remove_dir_all(&vault).or_else(|e| if vault.exists() { Err(e) } else { Ok(()) }).map_err(|e| e.to_string())?;
+        if mode == RemoveMode::RecycleBin {
+            if m.enabled {
+                let own: Vec<PathBuf> = m.files.iter().filter_map(|f| safe_rel(&f.path)).map(|r| self.saved_games.join(r)).filter(|p| p.exists()).collect();
+                crate::trash::recycle(&own)?;
+                for f in &m.files {
+                    if let Some(parent) = safe_rel(&f.path).and_then(|r| self.saved_games.join(r).parent().map(Path::to_path_buf)) {
+                        prune_empty(&parent, &self.prune_stop(&m.root, &f.path));
+                    }
+                }
+                for p in &m.displaced {
+                    let rel = safe_rel(p).ok_or("bad path")?;
+                    let from = vault.join(".displaced").join(&rel);
+                    let to = self.saved_games.join(&rel);
+                    if from.exists() && !to.exists() {
+                        move_file(&from, &to).map_err(|e| e.to_string())?;
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&vault);
+            } else {
+                for f in &m.files {
+                    let Some(rel) = safe_rel(&f.path) else { continue };
+                    let plain = vault.join(&rel);
+                    let z = compress::zst_path(&plain);
+                    if !plain.exists() && z.exists() {
+                        compress::decode_to(&z, &plain).map_err(|e| format!("Could not unpack {}: {e}", f.path))?;
+                        let _ = std::fs::remove_file(&z);
+                    }
+                }
+                if vault.exists() {
+                    crate::trash::recycle(&[vault.clone()])?;
+                }
+            }
+        } else {
+            let m = if m.enabled { self.disable(id, true)? } else { m };
+            let vault = self.vault_dir(&m.id);
+            std::fs::remove_dir_all(&vault).or_else(|e| if vault.exists() { Err(e) } else { Ok(()) }).map_err(|e| e.to_string())?;
+        }
         std::fs::remove_file(self.manifest_path(id)).map_err(|e| e.to_string())
     }
 
@@ -627,22 +799,79 @@ fn package_entries(package: &Path) -> Result<Vec<String>, String> {
     Ok(zip.file_names().map(|s| s.replace('\\', "/")).collect())
 }
 
-/// The prefix under which the package's DCS folders start ("" or "MyMod/").
-fn package_base(entries: &[String]) -> Option<String> {
+/// How a package is laid out.
+#[derive(Debug, PartialEq)]
+enum Layout {
+    /// Its DCS folders (Mods, Liveries, ...) start under this prefix ("" or "MyMod/").
+    Rooted(String),
+    /// A bare mod folder: entry.lua directly under `prefix` ("" = at the top of the package,
+    /// folder named after the package; "X/" = folder X).
+    ModFolder { prefix: String, folder: Option<String> },
+}
+
+fn package_layout(entries: &[String]) -> Option<Layout> {
     let is_root = |seg: &str| PACKAGE_ROOTS.contains(&seg.to_ascii_lowercase().as_str());
-    for e in entries {
-        let segs: Vec<&str> = e.split('/').collect();
-        if segs.len() > 1 && is_root(segs[0]) {
-            return Some(String::new());
-        }
+    let segs_of = |e: &String| e.split('/').map(str::to_string).collect::<Vec<String>>();
+    if entries.iter().any(|e| {
+        let s = segs_of(e);
+        s.len() > 1 && is_root(&s[0])
+    }) {
+        return Some(Layout::Rooted(String::new()));
+    }
+    if entries.iter().any(|e| e.eq_ignore_ascii_case("entry.lua")) {
+        return Some(Layout::ModFolder { prefix: String::new(), folder: None });
+    }
+    // "X/entry.lua" is checked before "X/Liveries/...": a mod folder can carry its own Liveries
+    if let Some(e) = entries.iter().find(|e| {
+        let s = segs_of(e);
+        s.len() == 2 && s[1].eq_ignore_ascii_case("entry.lua")
+    }) {
+        let folder = e.split('/').next().unwrap_or("Mod").to_string();
+        return Some(Layout::ModFolder { prefix: format!("{folder}/"), folder: Some(folder) });
     }
     for e in entries {
-        let segs: Vec<&str> = e.split('/').collect();
-        if segs.len() > 2 && is_root(segs[1]) {
-            return Some(format!("{}/", segs[0]));
+        let s = segs_of(e);
+        if s.len() > 2 && is_root(&s[1]) {
+            return Some(Layout::Rooted(format!("{}/", s[0])));
         }
+    }
+    // a mod folder wrapped once more ("Pack 2.0/Pack 2.0/entry.lua"): the shallowest entry.lua
+    if let Some(e) = entries
+        .iter()
+        .filter(|e| {
+            let s = segs_of(e);
+            (3..=4).contains(&s.len()) && s.last().is_some_and(|l| l.eq_ignore_ascii_case("entry.lua"))
+        })
+        .min_by_key(|e| e.len())
+    {
+        let prefix = &e[..e.len() - "entry.lua".len()];
+        let folder = prefix.trim_end_matches('/').rsplit('/').next().unwrap_or("Mod").to_string();
+        return Some(Layout::ModFolder { prefix: prefix.to_string(), folder: Some(folder) });
     }
     None
+}
+
+/// Reads one text file from a package (folder or zip), at most 1 MB.
+fn read_package_file(package: &Path, rel: &str) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if package.is_dir() {
+        std::fs::File::open(package.join(safe_rel(rel)?)).ok()?.take(1 << 20).read_to_end(&mut buf).ok()?;
+    } else {
+        let mut z = zip::ZipArchive::new(std::fs::File::open(package).ok()?).ok()?;
+        z.by_name(rel).ok()?.take(1 << 20).read_to_end(&mut buf).ok()?;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// `displayName = _("...")` from an entry.lua, if it is plain text.
+fn lua_display_name(entry: &str) -> Option<String> {
+    let i = entry.find("displayName")?;
+    let rest = &entry[i..];
+    let q = rest.find('"')?;
+    let end = rest[q + 1..].find('"')?;
+    let name = rest[q + 1..q + 1 + end].trim();
+    (!name.is_empty() && name.len() <= 80 && !name.contains('\n')).then(|| name.to_string())
 }
 
 /// The mod's main folder: e.g. Mods/aircraft/A-4E-C, Liveries/F-16C_50/331, Scripts/Hooks/x.lua.
@@ -710,7 +939,7 @@ mod tests {
         let roots: Vec<&str> = c.iter().map(|x| x.root.as_str()).collect();
         assert!(roots.contains(&"Mods/aircraft/A-4E-C"));
         assert!(roots.contains(&"Scripts/Hooks/SRS-AutoConnect.lua"));
-        assert!(roots.contains(&"Liveries/F-16C_50/331sq"));
+        assert!(roots.contains(&"Liveries/F-16C_50"), "liveries are listed per unit");
         assert!(!roots.iter().any(|r| r.starts_with("Config")));
         store.adopt("Mods/aircraft/A-4E-C", "A-4E-C", "Aircraft").unwrap();
         let a4 = store.scan().into_iter().find(|x| x.root == "Mods/aircraft/A-4E-C").unwrap();
@@ -758,7 +987,7 @@ mod tests {
         // a second livery pack with the same file, kept switched off in the vault
         put(&root, "pack/Liveries/F-16C_50/331sq/description.lua", "PACK VERSION");
         store.disable(&a.id, false).unwrap();
-        let b = store.add_package(&root.join("pack")).unwrap();
+        let b = store.add_package(&root.join("pack"), &mut |_, _, _| {}).unwrap();
         store.disable(&b.id, false).unwrap();
         store.enable(&a.id).unwrap();
         // b switched on while a is on: b wins, a's file goes to b's vault
@@ -784,13 +1013,73 @@ mod tests {
             z.write_all(b"readme").unwrap();
             z.finish().unwrap();
         }
-        let m = store.add_package(&zp).unwrap();
+        let m = store.add_package(&zp, &mut |_, _, _| {}).unwrap();
         assert_eq!(m.root, "Mods/tech/MyTech");
         assert_eq!(m.kind, "Tech");
         assert_eq!(m.files.len(), 1, "README outside the DCS folders is not copied: {:?}", m.files);
         assert_eq!(std::fs::read_to_string(store.saved_games.join("Mods/tech/MyTech/entry.lua")).unwrap(), "TECH");
         // adding again refuses to overwrite
-        assert!(store.add_package(&zp).unwrap_err().contains("overwrite"));
+        assert!(store.add_package(&zp, &mut |_, _, _| {}).unwrap_err().contains("overwrite"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bare_mod_folder_like_currenthill_goes_to_mods_tech() {
+        let (root, store) = setup("barefolder");
+        let zp = root.join("CH Pack - Full installation 1.0.zip");
+        {
+            let f = std::fs::File::create(&zp).unwrap();
+            let mut z = zip::ZipWriter::new(f);
+            let o = zip::write::SimpleFileOptions::default();
+            z.start_file("CH Asset Pack Test 1.0/entry.lua", o).unwrap();
+            z.write_all(b"declare_plugin(\"x\", { displayName = _(\"Asset Pack Test by Someone\"), })\nmount_vfs_liveries_path(current_mod_path..\"/Liveries\")").unwrap();
+            z.start_file("CH Asset Pack Test 1.0/Liveries/CH_Tank/Green/description.lua", o).unwrap();
+            z.write_all(b"livery").unwrap();
+            z.start_file("CH Asset Pack Test 1.0/Shapes/tank.edm", o).unwrap();
+            z.write_all(b"shape").unwrap();
+            z.start_file("CH Asset Pack Test 1.0/README.txt", o).unwrap();
+            z.write_all(b"Extract to Saved Games\\DCS\\Mods\\tech").unwrap();
+            z.finish().unwrap();
+        }
+        let mut steps = 0;
+        let m = store.add_package(&zp, &mut |_, _, _| steps += 1).unwrap();
+        assert_eq!(m.root, "Mods/tech/CH Asset Pack Test 1.0");
+        assert_eq!(m.kind, "Tech");
+        assert_eq!(m.name, "Asset Pack Test by Someone", "the name comes from entry.lua");
+        assert_eq!(m.files.len(), 4, "the whole folder, liveries and readme included");
+        assert!(steps >= 4, "progress is reported per file");
+        let base = store.saved_games.join("Mods/tech/CH Asset Pack Test 1.0");
+        assert!(base.join("Liveries/CH_Tank/Green/description.lua").exists(), "liveries stay inside the mod folder");
+        assert!(!store.saved_games.join("Liveries/CH_Tank").exists(), "nothing goes to Saved Games\\Liveries");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bare_aircraft_folder_and_unit_liveries_in_scan() {
+        let (root, store) = setup("bareaircraft");
+        put(&root, "pack/MyJet/entry.lua", "declare_plugin(\"MyJet\", {}) make_flyable('MyJet', nil, nil, nil)");
+        put(&root, "pack/MyJet/FM/fm.lua", "fm");
+        let m = store.add_package(&root.join("pack"), &mut |_, _, _| {}).unwrap();
+        assert_eq!(m.root, "Mods/aircraft/MyJet");
+        assert_eq!(m.kind, "Aircraft");
+        // loose liveries are listed once per unit, not once per livery
+        put(&store.saved_games, "Liveries/CH_Strv103/Green/description.lua", "x");
+        put(&store.saved_games, "Liveries/CH_Strv103/Splinter/description.lua", "x");
+        let c: Vec<_> = store.scan().into_iter().filter(|c| c.kind == "Livery" && c.root.contains("CH_")).collect();
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].root, "Liveries/CH_Strv103");
+        assert_eq!(c[0].name, "CH_Strv103 liveries (2)");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn doubly_wrapped_mod_folder() {
+        let (root, store) = setup("doublewrap");
+        put(&root, "pack/Pack 2.0/Pack 2.0/entry.lua", "declare_plugin(\"p\", {})");
+        put(&root, "pack/Pack 2.0/Pack 2.0/Shapes/a.edm", "a");
+        let m = store.add_package(&root.join("pack"), &mut |_, _, _| {}).unwrap();
+        assert_eq!(m.root, "Mods/tech/Pack 2.0");
+        assert!(store.saved_games.join("Mods/tech/Pack 2.0/Shapes/a.edm").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -798,7 +1087,7 @@ mod tests {
     fn package_without_dcs_folders_is_refused() {
         let (root, store) = setup("nofolders");
         put(&root, "pack/readme.txt", "x");
-        assert!(store.add_package(&root.join("pack")).is_err());
+        assert!(store.add_package(&root.join("pack"), &mut |_, _, _| {}).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -821,6 +1110,29 @@ mod tests {
     }
 
     #[test]
+    fn compressed_vault_switches_on_and_off() {
+        let (root, store) = setup("vaultzip");
+        let store = store.with_compression(&Compression { vault: true, ..Compression::default() });
+        let body = "-- a mod script line that repeats
+".repeat(4000);
+        put(&store.saved_games, "Mods/tech/Zipped/entry.lua", &body);
+        put(&store.saved_games, "Mods/tech/Zipped/Textures/skin.dds", &"D".repeat(20000));
+        let m = store.adopt("Mods/tech/Zipped", "Zipped", "Tech").unwrap();
+        store.disable(&m.id, false).unwrap();
+        let v = store.vault_dir(&m.id);
+        assert!(v.join("Mods/tech/Zipped/entry.lua.zst").exists(), "switched-off files are compressed");
+        assert!(!v.join("Mods/tech/Zipped/entry.lua").exists());
+        assert!(!store.saved_games.join("Mods/tech/Zipped").exists());
+        store.enable(&m.id).unwrap();
+        assert_eq!(std::fs::read_to_string(store.saved_games.join("Mods/tech/Zipped/entry.lua")).unwrap(), body);
+        assert!(!v.join("Mods/tech/Zipped/entry.lua.zst").exists(), "the compressed copy is removed after switching on");
+        // switching on again is not reported as a change
+        store.disable(&m.id, false).unwrap();
+        store.enable(&m.id).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn mod_sets_and_remove() {
         let (root, store) = setup("sets");
         let a = store.adopt("Mods/aircraft/A-4E-C", "A-4E-C", "Aircraft").unwrap();
@@ -831,9 +1143,39 @@ mod tests {
         // only SRS
         assert!(store.apply_set(&[s.id.clone()]).unwrap().is_empty());
         assert!(store.load(&s.id).unwrap().enabled && !store.load(&a.id).unwrap().enabled);
-        store.remove(&a.id).unwrap();
+        store.remove(&a.id, RemoveMode::Permanent).unwrap();
         assert!(!store.vault_dir(&a.id).exists());
         assert!(store.load(&a.id).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod real_packages {
+    /// Reads only the file lists (and entry.lua) of the zips in "Saved Games\DCS Mods" and prints
+    /// where Hangar would install them. Installs nothing.
+    /// `cargo test --lib real_package_layouts -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_package_layouts() {
+        let Some(sg) = crate::winutil::saved_games_dir() else { return };
+        let dir = sg.join("DCS Mods");
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip")) {
+                continue;
+            }
+            let entries = super::package_entries(&p).unwrap();
+            let layout = super::package_layout(&entries);
+            let (place, name) = match &layout {
+                Some(super::Layout::ModFolder { prefix, folder }) => {
+                    let entry = super::read_package_file(&p, &format!("{prefix}entry.lua")).unwrap_or_default();
+                    (format!("{}/{}", if entry.contains("make_flyable") { "Mods/aircraft" } else { "Mods/tech" }, folder.clone().unwrap_or_default()), super::lua_display_name(&entry))
+                }
+                other => (format!("{other:?}"), None),
+            };
+            println!("{} -> {} ({:?}, {} entries)", p.file_name().unwrap().to_string_lossy(), place, name, entries.len());
+            assert!(matches!(layout, Some(super::Layout::ModFolder { .. })));
+        }
     }
 }

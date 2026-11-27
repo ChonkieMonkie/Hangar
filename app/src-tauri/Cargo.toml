@@ -1,6 +1,6 @@
 [package]
 name = "hangar"
-version = "0.2.2"
+version = "0.3.0"
 description = "Hangar - a community-made updater & launcher for DCS World. Not affiliated with Eagle Dynamics SA."
 authors = ["ChonkieMonkie"]
 license = "GPL-3.0-or-later"
@@ -24,12 +24,15 @@ winreg = "0.55"
 sha2 = "0.10"
 tauri-plugin-dialog = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = { version = "0.13", features = ["zstdmt"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_Graphics_Imaging",
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Storage_FileSystem",

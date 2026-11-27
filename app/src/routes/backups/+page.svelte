@@ -11,6 +11,7 @@
   import { api, type BackupOverview, type FileRow, type Settings, type SnapshotInfo, type TopFolder } from "$lib/api";
   import { bytes, when } from "$lib/format";
   import { hangar, loadSettings, saveSettings } from "$lib/state.svelte";
+  import { Selection, selectionKeys, nameList } from "$lib/selection.svelte";
 
   let ov = $state<BackupOverview | null>(null);
   let error = $state<string | null>(null);
@@ -125,7 +126,70 @@
   }
 
   const check = (s: SnapshotInfo) => (s.verified ? (s.verified.ok ? "Verified" : "Damaged") : "Not checked");
+
+  // ---------------------------------------------------------------- batch actions (ROADMAP #15)
+  const picks = new Selection();
+  let order = $derived(ov?.snapshots.map((x) => x.id) ?? []);
+  $effect(() => picks.prune(order));
+  let chosen = $derived(ov?.snapshots.filter((x) => picks.has(x.id)) ?? []);
+  let batchConfirm = $state<null | { freed: number | null; permanent: boolean }>(null);
+  const PHRASE = "thisismyownfault";
+  let phrase = $state("");
+  let deletePermanent = $state(false);
+  function askDeleteOne(e: MouseEvent) {
+    deletePermanent = e.shiftKey;
+    phrase = "";
+    confirm = "delete";
+  }
+  const onKeys = selectionKeys(picks, () => order);
+  function pickOlder(days: number) {
+    const cut = Date.now() / 1000 - days * 86400;
+    picks.set((ov?.snapshots ?? []).filter((x) => x.createdUnix < cut).map((x) => x.id));
+  }
+  function pickAutomatic() {
+    picks.set((ov?.snapshots ?? []).filter((x) => x.reason === "Before update").map((x) => x.id));
+  }
+  let deleteWarnings = $derived.by(() => {
+    if (!ov) return [] as string[];
+    const w: string[] = [];
+    const unpinned = chosen.filter((x) => !x.pinned);
+    if (unpinned.length && unpinned.length === ov.snapshots.filter((x) => !x.pinned).length) w.push("This deletes every snapshot that is not pinned.");
+    if (ov.snapshots[0] && unpinned.some((x) => x.id === ov!.snapshots[0].id)) w.push("The newest snapshot is included.");
+    if (lastVerified && unpinned.some((x) => x.id === lastVerified!.id)) w.push("The last verified snapshot is included.");
+    if (unpinned.some((x) => x.reason === "Before restore")) w.push('A "Before restore" snapshot is included. Without it, that restore can\'t be undone.');
+    return w;
+  });
+  async function askDelete(e: MouseEvent) {
+    const permanent = e.shiftKey;
+    phrase = "";
+    batchConfirm = { freed: null, permanent };
+    const ids = chosen.filter((x) => !x.pinned).map((x) => x.id);
+    const freed = await api.backupsEstimateFreed(ids).catch(() => null);
+    if (batchConfirm) batchConfirm = { freed, permanent };
+  }
+  async function runBatch(action: "delete" | "verify" | "pin" | "unpin") {
+    const ids = chosen.map((x) => x.id);
+    const permanent = action === "delete" && !!batchConfirm?.permanent;
+    const typed = phrase;
+    batchConfirm = null;
+    await run(action, () => api.backupsBatch(action, ids, { permanent, phrase: permanent ? typed : null }), (r) => {
+      const parts: string[] = [];
+      const what = `${r.done.length} ${r.done.length === 1 ? "snapshot" : "snapshots"}`;
+      if (action === "delete") parts.push(permanent ? `Deleted ${what} permanently, ${bytes(r.freed)} freed.` : `Moved ${what} to the Recycle Bin (${bytes(r.freed)}). Restore them from there to get them back.`);
+      if (action === "verify") {
+        const bad = r.verified.filter(([, ok]) => !ok).length;
+        parts.push(`${r.verified.length - bad} OK${bad ? `, ${bad} damaged` : ""}.`);
+      }
+      if (action === "pin" || action === "unpin") parts.push(`${action === "pin" ? "Pinned" : "Unpinned"} ${r.done.length}.`);
+      if (r.skipped.length) parts.push(`Skipped ${r.skipped.length} (${[...new Set(r.skipped.map(([, why]) => why))].join(", ")}).`);
+      if (r.failed.length) parts.push(`Stopped at an error: ${r.failed[0][1]}`);
+      return parts.join(" ");
+    });
+    if (action === "delete") picks.clear();
+  }
 </script>
+
+<svelte:window onkeydown={onKeys} />
 
 <header class="top">
   <div>
@@ -186,18 +250,75 @@
 
     <div class="split">
       <section class="card list">
-        <div class="lhead"><h2>Snapshots</h2><span class="faint small">Keeps the last 10, one per month for 6 months, and everything pinned</span></div>
+        <div class="lhead">
+          <div><h2>Snapshots</h2><span class="faint small">Keeps the last 10, one per month for 6 months, and everything pinned</span></div>
+          {#if ov.snapshots.length}
+            <button class="btn small" class:active={picks.active} onclick={() => (picks.active ? picks.stop() : picks.start())}>{picks.active ? "Done" : "Select"}</button>
+          {/if}
+        </div>
+        {#if picks.active}
+          <div class="quick">
+            <span class="faint small">Select:</span>
+            <button class="btn small" onclick={() => picks.set(order)}>All</button>
+            <button class="btn small" onclick={() => pickOlder(30)}>Older than 30 days</button>
+            <button class="btn small" onclick={() => pickOlder(90)}>90 days</button>
+            <button class="btn small" onclick={() => pickOlder(180)}>180 days</button>
+            <button class="btn small" onclick={pickAutomatic}>Automatic</button>
+            <span class="faint small hint">Shift+click selects a range · Ctrl+A all · Esc clears</span>
+          </div>
+        {/if}
         {#each ov.snapshots as s (s.id)}
-          <button class="row" class:sel={sel?.id === s.id} onclick={() => { selId = s.id; files = null; confirm = null; }}>
-            <span class="when">{when(s.createdUnix)}</span>
-            <span class="reason">{s.reason}{s.scope === "config" ? " · controls" : ""}</span>
-            <span class="mono faint">+{bytes(s.addedBytes)}</span>
-            <span class="chk" class:ok={s.verified?.ok} class:bad={s.verified && !s.verified.ok}>{check(s)}</span>
-            {#if s.pinned}<Icon name="pin" size={15} color="var(--sky)" />{/if}
-          </button>
+          {#if picks.active}
+            <label class="row pick" class:sel={picks.has(s.id)}>
+              <input type="checkbox" checked={picks.has(s.id)} onclick={(e) => { picks.toggle(s.id, order, e.shiftKey); e.currentTarget.checked = picks.has(s.id); }} aria-label={`Select ${when(s.createdUnix)} ${s.reason}`} />
+              <span class="when">{when(s.createdUnix)}</span>
+              <span class="reason">{s.reason}{s.scope === "config" ? " · controls" : ""}</span>
+              <span class="mono faint">+{bytes(s.addedBytes)}</span>
+              <span class="chk" class:ok={s.verified?.ok} class:bad={s.verified && !s.verified.ok}>{check(s)}</span>
+              {#if s.pinned}<Icon name="pin" size={15} color="var(--sky)" />{:else}<span></span>{/if}
+            </label>
+          {:else}
+            <button class="row" class:sel={sel?.id === s.id} onclick={() => { selId = s.id; files = null; confirm = null; }}>
+              <span class="when">{when(s.createdUnix)}</span>
+              <span class="reason">{s.reason}{s.scope === "config" ? " · controls" : ""}</span>
+              <span class="mono faint">+{bytes(s.addedBytes)}</span>
+              <span class="chk" class:ok={s.verified?.ok} class:bad={s.verified && !s.verified.ok}>{check(s)}</span>
+              {#if s.pinned}<Icon name="pin" size={15} color="var(--sky)" />{/if}
+            </button>
+          {/if}
         {:else}
           <div class="muted pad">No snapshots yet.</div>
         {/each}
+        {#if picks.active && picks.size}
+          <div class="batchbar" role="region" aria-label="Batch actions">
+            {#if batchConfirm}
+              <div class="bconfirm">
+                <div><b>{batchConfirm.permanent ? "Delete" : "Move"} {chosen.filter((x) => !x.pinned).length} {chosen.filter((x) => !x.pinned).length === 1 ? "snapshot" : "snapshots"}{batchConfirm.permanent ? " permanently" : " to the Recycle Bin"}?</b> {nameList(chosen.filter((x) => !x.pinned).map((x) => `${when(x.createdUnix)} ${x.reason}`))}</div>
+                {#if chosen.some((x) => x.pinned)}<div class="small">{chosen.filter((x) => x.pinned).length} pinned {chosen.filter((x) => x.pinned).length === 1 ? "snapshot is" : "snapshots are"} skipped.</div>{/if}
+                {#each deleteWarnings as w}<div class="small warnline"><Icon name="warn" size={14} color="var(--caution)" />{w}</div>{/each}
+                {#if batchConfirm.permanent}
+                  <div class="small">{batchConfirm.freed == null ? "Working out how much space this frees…" : `Frees about ${bytes(batchConfirm.freed)}.`} This can't be undone. Type <span class="mono">{PHRASE}</span> to confirm.</div>
+                  <input class="phrase mono" bind:value={phrase} placeholder={PHRASE} aria-label="Type the confirmation phrase" autocomplete="off" spellcheck="false" />
+                {:else}
+                  <div class="small">{batchConfirm.freed == null ? "Working out how much space this moves…" : `About ${bytes(batchConfirm.freed)} goes to the Recycle Bin.`} Restore it from there and the snapshots come back. The space is freed when you empty the Recycle Bin.</div>
+                  {#if !ov.recycleBin}<div class="small warnline"><Icon name="warn" size={14} color="var(--caution)" />The backup drive has no Recycle Bin. Hold Shift on Delete to delete permanently.</div>{/if}
+                {/if}
+                <div class="dactions">
+                  <button class="btn small danger" disabled={busy || chosen.every((x) => x.pinned) || (batchConfirm.permanent ? phrase.trim() !== PHRASE : !ov.recycleBin)} onclick={() => runBatch("delete")}>{batchConfirm.permanent ? "Delete permanently" : "Move to Recycle Bin"}</button>
+                  <button class="btn small" onclick={() => (batchConfirm = null)}>Cancel</button>
+                </div>
+              </div>
+            {:else}
+              <span><b>{picks.size}</b> selected</span>
+              <button class="btn small danger" disabled={busy} onclick={askDelete} title="Hold Shift to delete permanently"><Icon name="trash" size={14} />Delete…</button>
+              <button class="btn small" disabled={busy} onclick={() => runBatch("verify")}>Verify</button>
+              <button class="btn small" disabled={busy} onclick={() => runBatch("pin")}><Icon name="pin" size={14} />Pin</button>
+              <button class="btn small" disabled={busy} onclick={() => runBatch("unpin")}>Unpin</button>
+              <button class="btn small ghostb" onclick={() => picks.clear()}>Clear</button>
+              <span class="faint small">Hold Shift on Delete to delete permanently</span>
+            {/if}
+          </div>
+        {/if}
       </section>
 
       {#if sel}
@@ -233,17 +354,28 @@
               <button class="btn small" onclick={() => (confirm = null)}>Cancel</button>
             </div>
           {:else if confirm === "delete"}
-            <div class="confirm">
-              <span>Delete this snapshot? Files only it contains are removed from the backup.</span>
-              <button class="btn small danger" onclick={() => run("Deleting", () => api.backupDelete(sel!.id), (b) => `Deleted. ${bytes(b)} freed.`)}>Delete</button>
-              <button class="btn small" onclick={() => (confirm = null)}>Cancel</button>
-            </div>
+            {#if deletePermanent}
+              <div class="confirm col">
+                <span><b>Delete this snapshot permanently?</b> Files only it contains are removed from the backup. This can't be undone. Type <span class="mono">{PHRASE}</span> to confirm.</span>
+                <input class="phrase mono" bind:value={phrase} placeholder={PHRASE} aria-label="Type the confirmation phrase" autocomplete="off" spellcheck="false" />
+                <div class="dactions">
+                  <button class="btn small danger" disabled={phrase.trim() !== PHRASE} onclick={() => { const typed = phrase; void run("Deleting", () => api.backupDelete(sel!.id, true, typed), (b) => `Deleted permanently. ${bytes(b)} freed.`); }}>Delete permanently</button>
+                  <button class="btn small" onclick={() => (confirm = null)}>Cancel</button>
+                </div>
+              </div>
+            {:else}
+              <div class="confirm">
+                <span>Move this snapshot to the Recycle Bin? Restore it from there and it comes back.{ov.recycleBin ? "" : " The backup drive has no Recycle Bin: hold Shift on Delete to delete permanently."}</span>
+                <button class="btn small danger" disabled={!ov.recycleBin} onclick={() => run("Deleting", () => api.backupDelete(sel!.id), (b) => `Moved to the Recycle Bin (${bytes(b)}).`)}>Move to Recycle Bin</button>
+                <button class="btn small" onclick={() => (confirm = null)}>Cancel</button>
+              </div>
+            {/if}
           {:else}
             <div class="dactions">
               <button class="btn primary" disabled={busy || ov.dcsRunning || (restoreScope === "files" && picked.size === 0)} onclick={() => (confirm = "restore")}>Restore…</button>
               <button class="btn" disabled={busy} onclick={() => run("Verifying", () => api.backupVerify(sel!.id), (v) => v.ok ? `All ${v.checked} stored files check out.` : `${v.errors.length} problems found.`)}>Verify now</button>
               <button class="btn" onclick={() => run("", () => api.backupPin(sel!.id, !sel!.pinned))}><Icon name="pin" size={16} />{sel.pinned ? "Unpin" : "Pin"}</button>
-              <button class="btn danger" disabled={busy || sel.pinned} onclick={() => (confirm = "delete")}>Delete…</button>
+              <button class="btn danger" disabled={busy || sel.pinned} onclick={askDeleteOne} title="Hold Shift to delete permanently">Delete…</button>
             </div>
             {#if ov.dcsRunning}<div class="faint small">Close DCS to restore.</div>{/if}
           {/if}
@@ -339,4 +471,15 @@
   .top-f { display: flex; align-items: center; gap: 8px; font-size: 13px; min-height: 30px; }
   .top-f .mono { margin-left: auto; font-size: 12px; }
   .top-f.cache { opacity: 0.6; }
+  .row.pick { grid-template-columns: 22px 130px minmax(0, 1fr) 80px 96px 18px; cursor: pointer; }
+  .row.pick input { margin: 0; width: 16px; height: 16px; accent-color: var(--phosphor); }
+  .quick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 18px 12px; }
+  .quick .hint { margin-left: auto; }
+  .btn.active { border-color: var(--phosphor); }
+  .batchbar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--line-2); background: #182024; }
+  .bconfirm { display: flex; flex-direction: column; gap: 6px; width: 100%; font-size: 13px; }
+  .warnline { display: flex; gap: 6px; align-items: center; color: var(--caution); }
+  .ghostb { border-color: transparent; background: transparent; }
+  .phrase { min-height: 36px; max-width: 280px; padding: 0 10px; border: 1px solid #4a2a2d; border-radius: 8px; background: var(--inset); color: var(--ink); font-size: 13px; }
+  .confirm.col { flex-direction: column; align-items: stretch; }
 </style>

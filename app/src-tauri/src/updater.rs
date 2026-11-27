@@ -49,6 +49,8 @@ pub struct MonitorState {
     pub elapsed_s: f64,
     pub phase: Option<String>,
     pub window_readable: bool,
+    /// ED's updater window: "minimized" (by Hangar), "blocked" (Windows refused), "shown", or None.
+    pub window_control: Option<String>,
     /// Where progress comes from: "window" | "downloads" | "none"
     pub source: String,
     pub downloaded_mb: Option<f64>,
@@ -88,6 +90,7 @@ impl Default for MonitorState {
             elapsed_s: 0.0,
             phase: None,
             window_readable: false,
+            window_control: None,
             source: "none".into(),
             downloaded_mb: None,
             download_total_mb: None,
@@ -121,9 +124,24 @@ pub struct MonitorShared {
     /// The CLI process Hangar started (to reap it and read its exit code).
     pub child: Mutex<Option<Child>>,
     pub pending_action: Mutex<Option<String>>,
+    /// Set by "Show updater window": restore it and stop minimizing for this run.
+    pub show_window: std::sync::atomic::AtomicBool,
 }
 
 // ------------------------------------------------------------------ commands
+
+/// Window texts of ED's updater that Hangar understands, so its window may stay minimized.
+fn known_status(s: &str) -> bool {
+    ["Downloading", "Unpacking", "Installing", "Cleaning", "Waiting for operation", "Verifying", "Checking", "Preparing", "Removing", "Uninstalling"]
+        .iter()
+        .any(|k| s.starts_with(k))
+}
+
+/// "Show updater window" on the Update screen.
+#[tauri::command]
+pub fn show_updater_window(shared: State<'_, MonitorShared>) {
+    shared.show_window.store(true, std::sync::atomic::Ordering::SeqCst);
+}
 
 #[tauri::command]
 pub fn get_monitor_state(shared: State<'_, MonitorShared>) -> MonitorState {
@@ -205,6 +223,12 @@ struct Run {
     rec: Recorder,
     /// Log lines read this tick, written to the recording as (file name, line).
     new_log: Vec<(String, String)>,
+    /// Settings > "Minimize ED's updater window" when this run started.
+    minimize: bool,
+    minimized: std::collections::HashSet<isize>,
+    /// Stop minimizing for this run (the user asked to see it, or a window Hangar can't read appeared).
+    hands_off: bool,
+    window_control: Option<String>,
 }
 
 fn temp_logs() -> Vec<PathBuf> {
@@ -250,6 +274,10 @@ impl Run {
             net_scope_updater: false,
             rec,
             new_log: Vec::new(),
+            minimize: crate::settings::load().updater_window == "minimize",
+            minimized: std::collections::HashSet::new(),
+            hands_off: false,
+            window_control: None,
         };
         for p in temp_logs() {
             run.start_tail_at_end(p);
@@ -422,6 +450,14 @@ pub fn start_monitor(app: AppHandle) {
                 let mut readable = false;
                 let mut readings: Vec<WindowReading> = Vec::new();
                 let mut raw_windows = Vec::new();
+                let show_now = shared.show_window.swap(false, std::sync::atomic::Ordering::SeqCst);
+                if show_now {
+                    for h in r.minimized.drain() {
+                        winutil::restore_window(h);
+                    }
+                    r.hands_off = true;
+                    r.window_control = Some("shown".into());
+                }
                 if let Some(u) = &uia {
                     for w in winutil::windows_of(&pids).into_iter().filter(|w| w.visible && w.class == "#32770") {
                         let win32 = winutil::child_texts(w.hwnd);
@@ -435,6 +471,26 @@ pub fn start_monitor(app: AppHandle) {
                         let rd = parse_window_texts(&texts);
                         if rd.has_progress() || rd.status.is_some() {
                             readable = true;
+                        }
+                        // ROADMAP #12: minimize ED's window while Hangar shows the same progress.
+                        // A window Hangar can't read (a question, an error) is shown again and
+                        // Hangar stops minimizing for the rest of the run.
+                        if r.minimize && !r.hands_off {
+                            let known = rd.has_progress() || rd.status.as_deref().is_some_and(known_status);
+                            if known && !r.minimized.contains(&w.hwnd) && r.window_control.as_deref() != Some("blocked") {
+                                if winutil::minimize_window(w.hwnd) {
+                                    r.minimized.insert(w.hwnd);
+                                    r.window_control = Some("minimized".into());
+                                } else {
+                                    r.window_control = Some("blocked".into());
+                                }
+                            } else if !known && !texts.is_empty() {
+                                for h in r.minimized.drain() {
+                                    winutil::restore_window(h);
+                                }
+                                r.hands_off = true;
+                                r.window_control = Some("shown".into());
+                            }
                         }
                         readings.push(rd);
                         raw_windows.push(json!({ "pid": w.pid, "win32": win32, "uia": uia_t }));
@@ -559,6 +615,7 @@ pub fn start_monitor(app: AppHandle) {
                     s.elapsed_s = t;
                     s.phase = phase;
                     s.window_readable = readable || s.window_readable;
+                    s.window_control = r.window_control.clone();
                     s.source = source.into();
                     if let Some((d, tot, sp)) = reading.downloaded {
                         s.downloaded_mb = Some(d);

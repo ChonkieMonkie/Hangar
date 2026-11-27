@@ -18,12 +18,12 @@ Hangar is an unofficial, open-source front end for the standalone version of DCS
 
 ## Features
 
-- **Updates you can follow.** Start an update or repair and watch it live: progress for both download and unpacking, a graph of the updater's own network traffic, disk space, the current phase and a time estimate with a likely range. The estimate is our own. On the downloads recorded so far (6 runs) it was off by 5.6 % on average, against 42 % for the updater's built-in estimate. That is a small sample, so read it as a promising start, not a guarantee.
-- **Mod manager.** Switch mods in Saved Games on and off with one click. Files move to Hangar's vault and back. Conflicts follow "switched on last wins", and the covered file comes back when you switch the mod off. Mod sets, and warnings when you have edited a mod's files. Add mods from a zip or a folder.
-- **Backups.** Incremental, checksummed snapshots of your Saved Games folders (and Tacview, if you have it) to a folder you choose. You can verify, pin and restore everything, only your controls and options, or single files. Every restore first takes a snapshot of how things were, so it can be undone. A backup runs automatically before each update once you have chosen a backup folder.
+- **Updates you can follow.** Start an update or repair and watch it live, with ED's own window minimized while Hangar shows the same thing: progress for both download and unpacking, a graph of the updater's own network traffic, disk space, the current phase and a time estimate with a likely range. The estimate is our own. On the downloads recorded so far (6 runs) it was off by 5.6 % on average, against 42 % for the updater's built-in estimate. That is a small sample, so read it as a promising start, not a guarantee.
+- **Mod manager.** Switch mods in Saved Games on and off with one click. Files move to Hangar's vault and back. Conflicts follow "switched on last wins", and the covered file comes back when you switch the mod off. Mod sets, and warnings when you have edited a mod's files. Add one or several mods at once from zips or folders, including packs that are just a mod folder with an `entry.lua` (such as asset packs), which go to `Mods\tech` or `Mods\aircraft`. Select several mods to switch on, off or remove them at once. Removing sends the files to the Recycle Bin, and permanent deletion needs Shift and a typed confirmation.
+- **Backups.** Incremental, checksummed snapshots of your Saved Games folders (and Tacview, if you have it) to a folder you choose. You can verify, pin and restore everything, only your controls and options, or single files. Every restore first takes a snapshot of how things were, so it can be undone. A backup runs automatically before each update once you have chosen a backup folder. Backups are compressed (zstd, adjustable under Settings › Storage), and you can delete, verify or pin many snapshots at once, with a preview of the space freed. Deleted snapshots go to the Recycle Bin and come back if you restore them from there. Permanent deletion needs Shift and a typed confirmation.
 - **Readable logs.** `dcs.log` grouped by message and by the script it came from, with mod errors picked out. A history of every updater run, kept longer than the updater's own two log files.
 - **Launch presets.** Normal, VR (OpenXR) or flat screen, or your own command-line flags.
-- **Hangar wall.** Your own screenshots on the start screen, from folders you pick.
+- **Hangar wall.** Your own screenshots on the start screen, from folders you pick. HDR screenshots (JPEG XR from Game Bar or NVIDIA, HDR PNG) are tone-mapped so they look right.
 - **Links to ED's news.** The changelog, newsletters and "what's new in this version" open in your browser.
 - **ETA research (optional).** If you want to help improve the time estimate, switch on recording under Settings › ETA research and export an anonymized file to share. It is off by default. The file holds only progress numbers: no dates, paths, names or module names. Hangar never sends it anywhere, so you choose who gets it.
 
@@ -44,6 +44,7 @@ Where it writes:
 | Where | What | When |
 |---|---|---|
 | `%LOCALAPPDATA%\Hangar` | settings, mod vault, an archive of updater logs, ETA recordings (only if you switch them on) | while it runs |
+| Windows Recycle Bin | mods you remove, snapshots you delete | only when you click |
 | `Saved Games\DCS*` | switching mods on and off, restoring a backup | only when you click |
 | your backup folder | snapshots | when you back up, or before an update |
 
@@ -73,7 +74,7 @@ The code is Tauri 2 (Rust) with a Svelte 5 frontend.
 
 ## Project status
 
-Version 0.2.2, in active development, Windows only. Planned next: compression for backups and the mod vault, hiding the updater's window while Hangar shows its progress, and editing DCS graphics settings with presets.
+Version 0.3.0, in active development, Windows only. Planned next: editing DCS graphics settings with presets.
 
 ## Contributing
 

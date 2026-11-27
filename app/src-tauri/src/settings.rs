@@ -86,6 +86,46 @@ pub struct LaunchPreset {
     pub args: Vec<String>,
 }
 
+/// Compression for backups and the mod vault (ROADMAP #10, Settings > Storage).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Compression {
+    /// "zstd" | "none"
+    pub algorithm: String,
+    /// zstd level 1-19 ("effort"); 3 is fast with a good ratio.
+    pub level: i32,
+    /// 0 = automatic (up to 4).
+    pub threads: u32,
+    /// Files smaller than this are stored as they are.
+    pub min_size: u64,
+    /// Formats that are already compressed.
+    pub skip_extensions: Vec<String>,
+    /// Compress backup objects.
+    pub backups: bool,
+    /// Compress the files of switched-off mods in the vault (makes switching on slower).
+    pub vault: bool,
+    /// Only compress mods up to this size in GB (None = any size).
+    pub vault_max_gb: Option<f64>,
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Compression {
+            algorithm: "zstd".into(),
+            level: 3,
+            threads: 0,
+            min_size: 4096,
+            skip_extensions: ["zip", "7z", "rar", "jpg", "jpeg", "png", "webp", "ogg", "mp3", "mp4", "mkv", "trk", "miz", "acmi", "zst", "gz"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            backups: true,
+            vault: false,
+            vault_max_gb: None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModSet {
@@ -103,6 +143,8 @@ pub struct Settings {
     pub wall_mode: String,
     pub wall_subfolders: bool,
     pub wall_favorite: Option<String>,
+    /// HDR pictures (.jxr, PQ/HLG PNG): "tonemap" (shown, tone-mapped to SDR) or "skip".
+    pub wall_hdr: String,
     /// Backup destination. None = not chosen yet.
     pub backup_target: Option<String>,
     pub backup_sources: Vec<BackupSource>,
@@ -115,6 +157,9 @@ pub struct Settings {
     pub mod_sets: Vec<ModSet>,
     /// Record updater runs for ETA research (ROADMAP #14). Off by default.
     pub record_updates: bool,
+    pub compression: Compression,
+    /// ED's updater window while Hangar follows it: "minimize" (default) or "show".
+    pub updater_window: String,
 }
 
 impl Default for Settings {
@@ -124,6 +169,7 @@ impl Default for Settings {
             wall_mode: "random".into(),
             wall_subfolders: true,
             wall_favorite: None,
+            wall_hdr: "tonemap".into(),
             backup_target: None,
             backup_sources: Vec::new(),
             backup_excluded: Vec::new(),
@@ -136,6 +182,8 @@ impl Default for Settings {
             default_preset: Some("normal".into()),
             mod_sets: Vec::new(),
             record_updates: false,
+            compression: Compression::default(),
+            updater_window: "minimize".into(),
         }
     }
 }

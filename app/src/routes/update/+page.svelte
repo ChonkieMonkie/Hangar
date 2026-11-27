@@ -9,7 +9,14 @@
   import LineChart from "$lib/components/LineChart.svelte";
   import { api } from "$lib/api";
   import { mb, gb, duration, clock, finishAt } from "$lib/format";
-  import { hangar, currentInstall } from "$lib/state.svelte";
+  import Switch from "$lib/components/Switch.svelte";
+  import { hangar, currentInstall, loadSettings, saveSettings } from "$lib/state.svelte";
+
+  async function setMinimize(on: boolean) {
+    const s = structuredClone($state.snapshot(hangar.settings ?? (await loadSettings())));
+    s.updaterWindow = on ? "minimize" : "show";
+    await saveSettings(s);
+  }
 
   let install = $derived(currentInstall());
   let m = $derived(hangar.monitor);
@@ -47,7 +54,7 @@
   <section class="hero idle">
     <div>
       <div class="label">DCS World {install?.version ? `v${install.version}` : ""}</div>
-      <p class="muted">Hangar starts ED's updater and follows it here. Your controls are not backed up yet in 0.1.</p>
+      <p class="muted">Hangar starts ED's updater and follows it here. If you have chosen a backup folder, your controls and options are backed up first.</p>
     </div>
     <div class="actions">
       <button class="btn primary big" onclick={() => start("update")} disabled={!install?.updaterExists}><Icon name="update" />Update</button>
@@ -61,10 +68,24 @@
       {/if}
     </div>
     {#if error}<div class="err"><Icon name="warn" size={16} color="var(--warning)" />{error}</div>{/if}
+    {#if hangar.settings}
+      <div class="minrow">
+        <Switch checked={hangar.settings.updaterWindow !== "show"} label="Minimize ED's updater window" onchange={setMinimize} />
+        <span>Minimize ED's updater window while Hangar shows its progress</span>
+        <span class="faint small">It comes back by itself if it asks you something.</span>
+      </div>
+    {/if}
     {#if lastRun}
       <div class="last faint">Last run: {lastRun.startedUtc} UTC · {lastRun.kind}{lastRun.target ? ` ${lastRun.target}` : ""} · {lastRun.result} · {duration(lastRun.durationS)}</div>
     {/if}
   </section>
+{/if}
+
+{#if m && running && m.windowControl === "minimized"}
+  <div class="winnote"><Icon name="info" size={16} color="var(--sky)" /><span>ED's updater window is minimized while Hangar shows its progress.</span>
+    <button class="btn small" onclick={() => api.showUpdaterWindow()}>Show updater window</button></div>
+{:else if m && running && m.windowControl === "blocked"}
+  <div class="winnote"><Icon name="info" size={16} color="var(--ink-2)" /><span>Windows doesn't let Hangar minimize ED's updater window, because it runs as administrator. You can minimize it yourself.</span></div>
 {/if}
 
 {#if m && (running || finished)}
@@ -154,4 +175,7 @@
   .etabig { font-family: var(--font-head); font-weight: 600; font-size: 42px; line-height: 1; font-variant-numeric: tabular-nums; }
   .small { font-size: 13px; }
   .tail { margin-top: 10px; font-size: 11.5px; line-height: 1.7; color: var(--ink-2); overflow-x: auto; white-space: nowrap; }
+  .minrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
+  .minrow .small { font-size: 12px; }
+  .winnote { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-soft); }
 </style>

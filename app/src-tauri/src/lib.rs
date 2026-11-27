@@ -15,7 +15,9 @@
 
 pub mod backup;
 mod commands;
+pub mod compress;
 pub mod eta;
+pub mod hdr;
 mod install;
 mod logs;
 pub mod mods;
@@ -23,6 +25,7 @@ pub mod recorder;
 pub mod replay;
 pub mod settings;
 pub mod share;
+pub mod trash;
 mod updater;
 pub mod wall;
 pub mod window;
@@ -106,6 +109,14 @@ pub fn run() {
             commands::open_project_link,
             commands::license_text,
             commands::third_party_notices,
+            updater::show_updater_window,
+            commands::backups_estimate_freed,
+            commands::backups_batch,
+            commands::mods_batch,
+            commands::mods_add_many,
+            commands::storage_overview,
+            commands::compression_estimate,
+            commands::vault_compress_all,
             share::recordings_overview,
             share::recordings_export,
             share::recordings_delete_all,

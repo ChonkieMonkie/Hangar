@@ -16,7 +16,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::backup::{RestoreResult, SnapshotInfo, SourceRef, Store, TopFolder};
-use crate::mods::{Candidate, ModStore, ModView};
+use crate::mods::{RemoveMode, Candidate, ModStore, ModView};
 use crate::settings::{self, ModSet, Settings, data_dir, dcs_running};
 use crate::winutil;
 
@@ -116,6 +116,8 @@ pub struct BackupOverview {
     pub before_update: bool,
     pub busy: Option<String>,
     pub dcs_running: bool,
+    /// The backup drive has a Recycle Bin (deleting goes there).
+    pub recycle_bin: bool,
 }
 
 fn sources_of(s: &Settings) -> Vec<SourceRef> {
@@ -127,7 +129,7 @@ fn sources_of(s: &Settings) -> Vec<SourceRef> {
 }
 
 fn store_of(s: &Settings) -> Result<Store, String> {
-    s.backup_target.as_ref().map(Store::new).ok_or_else(|| "Choose a backup destination first.".to_string())
+    s.backup_target.as_ref().map(|t| Store::new(t).with_compression(&s.compression)).ok_or_else(|| "Choose a backup destination first.".to_string())
 }
 
 #[tauri::command]
@@ -137,6 +139,9 @@ pub async fn backup_overview() -> Result<BackupOverview, String> {
         let (snapshots, store_bytes, free) = match &s.backup_target {
             Some(t) => {
                 let st = Store::new(t);
+                if busy().is_none() {
+                    st.recover_deleted(); // snapshots the user restored from the Recycle Bin
+                }
                 (st.list().iter().map(SnapshotInfo::from).collect(), st.store_bytes(), winutil::disk_space(Path::new(t)).map(|x| x.0))
             }
             None => (vec![], 0, None),
@@ -156,6 +161,7 @@ pub async fn backup_overview() -> Result<BackupOverview, String> {
             before_update: s.backup_before_update,
             busy: busy(),
             dcs_running: dcs_running(),
+            recycle_bin: s.backup_target.as_ref().is_some_and(|t| crate::trash::available(Path::new(t))),
         }
     })
     .await
@@ -203,12 +209,17 @@ pub fn backup_pin(id: String, pinned: bool) -> Result<(), String> {
     store_of(&settings::load())?.set_pinned(&id, pinned)
 }
 
+/// Deletes one snapshot: to the Recycle Bin, or for good with `permanent` and the phrase.
 #[tauri::command]
-pub fn backup_delete(id: String) -> Result<u64, String> {
+pub fn backup_delete(id: String, permanent: Option<bool>, phrase: Option<String>) -> Result<u64, String> {
     if busy().is_some() {
         return Err("Wait until the current job is done.".into());
     }
-    store_of(&settings::load())?.delete(&id)
+    let store = store_of(&settings::load())?;
+    match remove_mode(permanent.unwrap_or(false), phrase.as_deref())? {
+        RemoveMode::Permanent => store.delete(&id),
+        RemoveMode::RecycleBin => store.delete_to_trash(&[id], &mut |_, _, _| {}).map(|(_, _, freed)| freed),
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -261,7 +272,7 @@ pub struct ModsOverview {
 
 fn mod_store() -> Result<ModStore, String> {
     let sg = main_saved_games().ok_or("Saved Games\\DCS was not found.")?;
-    Ok(ModStore::new(sg, data_dir()))
+    Ok(ModStore::new(sg, data_dir()).with_compression(&settings::load().compression))
 }
 
 #[tauri::command]
@@ -294,7 +305,32 @@ pub async fn mod_adopt(app: AppHandle, root: String, name: String, kind: String)
 pub async fn mod_add(app: AppHandle, path: String) -> Result<(), String> {
     refuse_if_dcs_running("adding mods")?;
     let st = mod_store()?;
-    job(app, "Installing mod", move |_| st.add_package(Path::new(&path)).map(|_| ())).await
+    job(app, "Installing mod", move |p| st.add_package(Path::new(&path), p).map(|_| ())).await
+}
+
+/// Installs several mod packages (zips or folders) one after another. A package that can't be
+/// installed is reported and the rest go on; nothing already installed is undone.
+#[tauri::command]
+pub async fn mods_add_many(app: AppHandle, paths: Vec<String>) -> Result<BatchReport, String> {
+    refuse_if_dcs_running("adding mods")?;
+    let st = mod_store()?;
+    job(app, "Installing mods", move |p| {
+        let mut r = BatchReport::default();
+        let n = paths.len();
+        for (i, path) in paths.iter().enumerate() {
+            let label = Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+            let mut inner = |done: usize, total: usize, _item: &str| {
+                p(i, n, &format!("{label} ({done}/{total} files)"));
+            };
+            match st.add_package(Path::new(path), &mut inner) {
+                Ok(m) => r.done.push(m.name),
+                Err(e) => r.failed.push((label, e)),
+            }
+        }
+        p(n, n, "");
+        Ok(r)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -305,11 +341,23 @@ pub async fn mod_set_enabled(app: AppHandle, id: String, enabled: bool, force: b
     job(app, label, move |_| if enabled { st.enable(&id).map(|_| ()) } else { st.disable(&id, force).map(|_| ()) }).await
 }
 
+/// Removes a mod: to the Recycle Bin, or for good with `permanent` and the phrase (B-030).
 #[tauri::command]
-pub async fn mod_remove(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn mod_remove(app: AppHandle, id: String, permanent: Option<bool>, phrase: Option<String>) -> Result<(), String> {
     refuse_if_dcs_running("removing mods")?;
+    let mode = remove_mode(permanent.unwrap_or(false), phrase.as_deref())?;
     let st = mod_store()?;
-    job(app, "Removing mod", move |_| st.remove(&id)).await
+    job(app, "Removing mod", move |_| st.remove(&id, mode)).await
+}
+
+fn remove_mode(permanent: bool, phrase: Option<&str>) -> Result<RemoveMode, String> {
+    if !permanent {
+        return Ok(RemoveMode::RecycleBin);
+    }
+    if !crate::trash::phrase_ok(phrase) {
+        return Err(format!("Type {} to delete permanently.", crate::trash::PERMANENT_PHRASE));
+    }
+    Ok(RemoveMode::Permanent)
 }
 
 #[tauri::command]
@@ -451,4 +499,203 @@ pub fn license_text() -> &'static str {
 #[tauri::command]
 pub fn third_party_notices() -> &'static str {
     include_str!("../../../THIRD-PARTY-NOTICES.txt")
+}
+
+// ------------------------------------------------------------------ batch actions (ROADMAP #15)
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReport {
+    pub done: Vec<String>,
+    /// (id, reason): left alone on purpose, e.g. pinned or changed files.
+    pub skipped: Vec<(String, String)>,
+    /// (id, error): tried and failed. The batch stops at the first failure.
+    pub failed: Vec<(String, String)>,
+    pub freed: u64,
+    /// Verify: (id, ok).
+    pub verified: Vec<(String, bool)>,
+}
+
+#[tauri::command]
+pub fn backups_estimate_freed(ids: Vec<String>) -> Result<u64, String> {
+    Ok(store_of(&settings::load())?.estimate_freed(&ids))
+}
+
+/// action: "delete" | "verify" | "pin" | "unpin". "delete" goes to the Recycle Bin unless
+/// `permanent` is set with the confirmation phrase (B-030).
+#[tauri::command]
+pub async fn backups_batch(app: AppHandle, action: String, ids: Vec<String>, permanent: Option<bool>, phrase: Option<String>) -> Result<BatchReport, String> {
+    let store = store_of(&settings::load())?;
+    let mode = remove_mode(permanent.unwrap_or(false), phrase.as_deref())?;
+    let label = match action.as_str() {
+        "delete" => "Deleting snapshots",
+        "verify" => "Verifying snapshots",
+        "pin" | "unpin" => "Pinning",
+        _ => return Err(format!("Unknown action: {action}")),
+    };
+    job(app, label, move |p| {
+        let mut r = BatchReport::default();
+        match action.as_str() {
+            "delete" => {
+                let (done, skipped, freed) = match mode {
+                    RemoveMode::Permanent => store.delete_many(&ids, p),
+                    RemoveMode::RecycleBin => store.delete_to_trash(&ids, p)?,
+                };
+                r.done = done;
+                r.skipped = skipped;
+                r.freed = freed;
+            }
+            "verify" => {
+                for (i, id) in ids.iter().enumerate() {
+                    p(i, ids.len(), id);
+                    match store.verify(id, &mut |_, _, _| {}) {
+                        Ok(v) => {
+                            r.verified.push((id.clone(), v.ok));
+                            r.done.push(id.clone());
+                        }
+                        Err(e) => {
+                            r.failed.push((id.clone(), e));
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {
+                let pin = action == "pin";
+                for (i, id) in ids.iter().enumerate() {
+                    p(i, ids.len(), id);
+                    match store.set_pinned(id, pin) {
+                        Ok(()) => r.done.push(id.clone()),
+                        Err(e) => {
+                            r.failed.push((id.clone(), e));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(r)
+    })
+    .await
+}
+
+/// action: "enable" | "disable" | "remove" | "forget". Mods are handled in the given order
+/// ("switched on last wins"). Without `force`, mods with changed files are skipped.
+#[tauri::command]
+pub async fn mods_batch(app: AppHandle, action: String, ids: Vec<String>, force: Option<bool>, permanent: Option<bool>, phrase: Option<String>) -> Result<BatchReport, String> {
+    refuse_if_dcs_running("changing mods")?;
+    let st = mod_store()?;
+    let mode = remove_mode(permanent.unwrap_or(false), phrase.as_deref())?;
+    let force = force.unwrap_or(false);
+    let label = match action.as_str() {
+        "enable" => "Switching on",
+        "disable" => "Switching off",
+        "remove" => "Removing mods",
+        "forget" => "Stopping tracking",
+        _ => return Err(format!("Unknown action: {action}")),
+    };
+    job(app, label, move |p| {
+        let mut r = BatchReport::default();
+        for (i, id) in ids.iter().enumerate() {
+            let name = st.load(id).map(|m| m.name).unwrap_or_else(|_| id.clone());
+            p(i, ids.len(), &name);
+            let res = match action.as_str() {
+                "enable" => st.enable(id).map(|_| ()),
+                "disable" => st.disable(id, force).map(|_| ()),
+                "remove" => st.remove(id, mode),
+                _ => st.forget(id),
+            };
+            match res {
+                Ok(()) => r.done.push(id.clone()),
+                Err(e) if e.starts_with("CHANGED:") => r.skipped.push((id.clone(), e.trim_start_matches("CHANGED:").to_string())),
+                Err(e) if action == "forget" && e.starts_with("Switch the mod on") => r.skipped.push((id.clone(), "switched off".into())),
+                Err(e) => {
+                    r.failed.push((id.clone(), e));
+                    break;
+                }
+            }
+        }
+        p(ids.len(), ids.len(), "");
+        Ok(r)
+    })
+    .await
+}
+
+// ------------------------------------------------------------------ storage (Settings > Storage)
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageOverview {
+    pub backup_bytes: Option<u64>,
+    pub vault_bytes: u64,
+    pub recycle_bin_for_vault: bool,
+}
+
+#[tauri::command]
+pub async fn storage_overview() -> Result<StorageOverview, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let s = settings::load();
+        let backup_bytes = s.backup_target.as_ref().map(|t| Store::new(t).store_bytes());
+        let vault = data_dir().join("vault");
+        StorageOverview {
+            backup_bytes,
+            vault_bytes: winutil::folder_size(&vault),
+            recycle_bin_for_vault: crate::trash::available(&data_dir()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionEstimate {
+    pub sampled: u64,
+    pub compressed: u64,
+    pub seconds: f64,
+}
+
+/// Compresses a sample (up to 64 MB) of the backup sources in memory with the given settings.
+/// Reads only; writes nothing.
+#[tauri::command]
+pub async fn compression_estimate(cfg: crate::settings::Compression) -> Result<CompressionEstimate, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = settings::load();
+        let mut files: Vec<PathBuf> = Vec::new();
+        for src in sources_of(&s) {
+            crate::backup::walk_files(Path::new(&src.root), &mut |p| {
+                if files.len() < 4000 {
+                    files.push(p.to_path_buf());
+                }
+            });
+        }
+        // spread the sample over the whole set
+        let step = (files.len() / 400).max(1);
+        let sample: Vec<PathBuf> = files.into_iter().step_by(step).collect();
+        let (sampled, compressed, seconds) = crate::compress::estimate(&cfg, &sample, 64 << 20);
+        CompressionEstimate { sampled, compressed, seconds }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Compresses the vault files of every switched-off mod now (vault compression must be on).
+#[tauri::command]
+pub async fn vault_compress_all(app: AppHandle) -> Result<(u64, u64), String> {
+    let st = mod_store()?;
+    if st.vault_compression.is_none() {
+        return Err("Switch on compression for switched-off mods first.".into());
+    }
+    job(app, "Compressing the vault", move |p| {
+        let off: Vec<_> = st.manifests().into_iter().filter(|m| !m.enabled).collect();
+        let (mut before, mut after) = (0, 0);
+        for (i, m) in off.iter().enumerate() {
+            p(i, off.len(), &m.name);
+            let (b, a) = st.compress_vault(&m.id)?;
+            before += b;
+            after += a;
+        }
+        Ok((before, after))
+    })
+    .await
 }

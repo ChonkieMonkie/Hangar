@@ -168,7 +168,8 @@
     </div>
     <div class="card tile">
       <div class="label">Modules</div>
-      <div class="big mono">{aircraft.length}<span class="faint"> + {terrains.length} maps</span></div>
+      <div class="big mono">{aircraft.length + terrains.length}</div>
+      <div class="faint small">{aircraft.length} aircraft · {terrains.length} {terrains.length === 1 ? "map" : "maps"}</div>
     </div>
     <div class="card tile">
       <div class="label">Last update</div>
@@ -226,7 +227,6 @@
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
   .tile { display: flex; flex-direction: column; gap: 8px; }
   .tile .big { font-size: 24px; font-weight: 500; min-height: 0; }
-  .tile .big .faint { font-size: 15px; }
   .tile.link { text-decoration: none; color: inherit; }
   .tile.link:hover { border-color: var(--line-2); }
   .small { font-size: 12px; }

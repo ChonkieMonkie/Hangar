@@ -76,6 +76,8 @@ export interface MonitorState {
   elapsedS: number;
   phase: string | null;
   windowReadable: boolean;
+  /** ED's updater window: "minimized" by Hangar, "blocked" (Windows refused), "shown", or null. */
+  windowControl: "minimized" | "blocked" | "shown" | null;
   source: "window" | "downloads" | "none";
   downloadedMb: number | null;
   downloadTotalMb: number | null;
@@ -112,6 +114,8 @@ export interface Settings {
   wallMode: "random" | "newest" | "favorite";
   wallSubfolders: boolean;
   wallFavorite: string | null;
+  /** HDR pictures: "tonemap" (shown, tone-mapped to SDR) or "skip". */
+  wallHdr: "tonemap" | "skip";
   backupTarget: string | null;
   backupSources: BackupSource[];
   backupExcluded: string[];
@@ -121,7 +125,33 @@ export interface Settings {
   modSets: ModSet[];
   /** ETA research: record updater runs (off by default). */
   recordUpdates: boolean;
+  compression: Compression;
+  /** ED's updater window while Hangar follows it. */
+  updaterWindow: "minimize" | "show";
 }
+
+// ------------------------------------------------------------------ batch actions, storage (commands.rs)
+export interface BatchReport {
+  done: string[];
+  /** [id, reason] */
+  skipped: [string, string][];
+  /** [id, error]; the batch stops at the first failure */
+  failed: [string, string][];
+  freed: number;
+  verified: [string, boolean][];
+}
+export interface Compression {
+  algorithm: "zstd" | "none";
+  level: number;
+  threads: number;
+  minSize: number;
+  skipExtensions: string[];
+  backups: boolean;
+  vault: boolean;
+  vaultMaxGb: number | null;
+}
+export interface StorageOverview { backupBytes: number | null; vaultBytes: number; recycleBinForVault: boolean; }
+export interface CompressionEstimate { sampled: number; compressed: number; seconds: number; }
 
 // ------------------------------------------------------------------ ETA research (share.rs)
 export interface RecordingsOverview {
@@ -137,7 +167,7 @@ export interface ExportSummary { recordings: number; bytes: number; path: string
 
 // ------------------------------------------------------------------ wall (wall.rs)
 export interface WallPicture { path: string; name: string; dataUrl: string; total: number; }
-export interface FolderStats { path: string; exists: boolean; pictures: number; skipped: number; }
+export interface FolderStats { path: string; exists: boolean; pictures: number; skipped: number; hdr: number; }
 export interface WallThumb { path: string; dataUrl: string; }
 
 // ------------------------------------------------------------------ backups (backup.rs, commands.rs)
@@ -151,6 +181,8 @@ export interface BackupOverview {
   target: string | null; targetFree: number | null; sameDisk: boolean; storeBytes: number;
   snapshots: SnapshotInfo[]; sources: SourceView[]; excluded: string[]; beforeUpdate: boolean;
   busy: string | null; dcsRunning: boolean;
+  /** The backup drive has a Recycle Bin (deleting goes there). */
+  recycleBin: boolean;
 }
 export interface TopFolder { name: string; bytes: number; cache: boolean; }
 export interface RestoreResult { restored: number; failed: string[]; beforeRestoreId: string; }
@@ -182,8 +214,8 @@ export const api = {
   saveSettings: (settings: Settings) => invoke<Settings>("save_settings", { settings }),
 
   wallPicture: (skip: string | null = null) => invoke<WallPicture | null>("wall_picture", { skip }),
-  wallStats: (folders: WallFolder[], subfolders: boolean) => invoke<FolderStats[]>("wall_stats", { folders, subfolders }),
-  wallThumbs: (folders: WallFolder[], subfolders: boolean, count: number) => invoke<WallThumb[]>("wall_thumbs", { folders, subfolders, count }),
+  wallStats: (folders: WallFolder[], subfolders: boolean, hdr = true) => invoke<FolderStats[]>("wall_stats", { folders, subfolders, hdr }),
+  wallThumbs: (folders: WallFolder[], subfolders: boolean, count: number, hdr = true) => invoke<WallThumb[]>("wall_thumbs", { folders, subfolders, count, hdr }),
 
   backupOverview: () => invoke<BackupOverview>("backup_overview"),
   backupTopFolders: (path: string) => invoke<TopFolder[]>("backup_top_folders", { path }),
@@ -192,14 +224,27 @@ export const api = {
   backupRestore: (id: string, scope: "all" | "config", files: [string, string][] | null = null) =>
     invoke<RestoreResult>("backup_restore", { id, scope, files }),
   backupPin: (id: string, pinned: boolean) => invoke<void>("backup_pin", { id, pinned }),
-  backupDelete: (id: string) => invoke<number>("backup_delete", { id }),
+  /** To the Recycle Bin, or for good with `permanent` and the phrase "thisismyownfault". */
+  backupDelete: (id: string, permanent = false, phrase: string | null = null) => invoke<number>("backup_delete", { id, permanent, phrase }),
   backupFiles: (id: string) => invoke<FileRow[]>("backup_files", { id }),
 
   modsOverview: () => invoke<ModsOverview>("mods_overview"),
   modAdopt: (root: string, name: string, kind: string) => invoke<void>("mod_adopt", { root, name, kind }),
   modAdd: (path: string) => invoke<void>("mod_add", { path }),
   modSetEnabled: (id: string, enabled: boolean, force = false) => invoke<void>("mod_set_enabled", { id, enabled, force }),
-  modRemove: (id: string) => invoke<void>("mod_remove", { id }),
+  /** To the Recycle Bin, or for good with `permanent` and the phrase "thisismyownfault". */
+  modRemove: (id: string, permanent = false, phrase: string | null = null) => invoke<void>("mod_remove", { id, permanent, phrase }),
+  backupsEstimateFreed: (ids: string[]) => invoke<number>("backups_estimate_freed", { ids }),
+  backupsBatch: (action: "delete" | "verify" | "pin" | "unpin", ids: string[], opts: { permanent?: boolean; phrase?: string | null } = {}) =>
+    invoke<BatchReport>("backups_batch", { action, ids, permanent: opts.permanent ?? false, phrase: opts.phrase ?? null }),
+  modsBatch: (action: "enable" | "disable" | "remove" | "forget", ids: string[], opts: { force?: boolean; permanent?: boolean; phrase?: string | null } = {}) =>
+    invoke<BatchReport>("mods_batch", { action, ids, force: opts.force ?? false, permanent: opts.permanent ?? false, phrase: opts.phrase ?? null }),
+  showUpdaterWindow: () => invoke<void>("show_updater_window"),
+  /** Installs several mod zips/folders in one job. */
+  modsAddMany: (paths: string[]) => invoke<BatchReport>("mods_add_many", { paths }),
+  storageOverview: () => invoke<StorageOverview>("storage_overview"),
+  compressionEstimate: (cfg: Compression) => invoke<CompressionEstimate>("compression_estimate", { cfg }),
+  vaultCompressAll: () => invoke<[number, number]>("vault_compress_all"),
   modForget: (id: string) => invoke<void>("mod_forget", { id }),
   modApplySet: (setId: string) => invoke<string[]>("mod_apply_set", { setId }),
 

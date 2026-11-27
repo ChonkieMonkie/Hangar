@@ -15,6 +15,8 @@ use serde::Serialize;
 use crate::settings::{Settings, WallFolder};
 
 const EXTS: [&str; 5] = ["jpg", "jpeg", "png", "bmp", "webp"];
+/// SDR siblings that make a .jxr of the same name a duplicate (Game Bar saves both).
+const SDR_TWINS: [&str; 3] = ["png", "jpg", "jpeg"];
 const MAX_FILES: usize = 20_000;
 
 #[derive(Clone, Debug)]
@@ -29,18 +31,23 @@ pub struct FolderStats {
     pub path: String,
     pub exists: bool,
     pub pictures: usize,
-    /// HDR captures (.jxr) and other files that are skipped.
+    /// HDR captures (.jxr) that are skipped (setting "skip").
     pub skipped: usize,
+    /// HDR pictures included (tone-mapped).
+    pub hdr: usize,
 }
 
 fn ext_ok(p: &Path) -> bool {
     p.extension().map(|e| EXTS.contains(&e.to_string_lossy().to_ascii_lowercase().as_str())).unwrap_or(false)
 }
 
-/// Pictures in one folder (optionally its subfolders, max 4 levels).
-pub fn index_folder(dir: &Path, subfolders: bool) -> (Vec<Pic>, usize) {
+/// Pictures in one folder (optionally its subfolders, max 4 levels). With `hdr`, JPEG XR files
+/// are included unless an SDR copy with the same name sits next to them.
+/// Returns (pictures, HDR skipped, HDR included).
+pub fn index_folder(dir: &Path, subfolders: bool, hdr: bool) -> (Vec<Pic>, usize, usize) {
     let mut pics = Vec::new();
     let mut skipped = 0;
+    let mut hdr_count = 0;
     let mut stack = vec![(dir.to_path_buf(), 0)];
     while let Some((d, depth)) = stack.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
@@ -59,16 +66,31 @@ pub fn index_folder(dir: &Path, subfolders: bool) -> (Vec<Pic>, usize) {
                         .unwrap_or(0);
                     pics.push(Pic { path: e.path(), mtime });
                 }
-            } else if e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("jxr")) {
-                skipped += 1;
+            } else if crate::hdr::is_jxr(&e.path()) {
+                let twin = SDR_TWINS.iter().any(|x| e.path().with_extension(x).exists());
+                if twin {
+                    continue; // the SDR copy is already in the list
+                }
+                if !hdr {
+                    skipped += 1;
+                } else if pics.len() < MAX_FILES {
+                    let mtime = md
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    pics.push(Pic { path: e.path(), mtime });
+                    hdr_count += 1;
+                }
             }
         }
     }
-    (pics, skipped)
+    (pics, skipped, hdr_count)
 }
 
-pub fn index(folders: &[WallFolder], subfolders: bool) -> Vec<Pic> {
-    folders.iter().filter(|f| f.enabled).flat_map(|f| index_folder(Path::new(&f.path), subfolders).0).collect()
+pub fn index(folders: &[WallFolder], subfolders: bool, hdr: bool) -> Vec<Pic> {
+    folders.iter().filter(|f| f.enabled).flat_map(|f| index_folder(Path::new(&f.path), subfolders, hdr).0).collect()
 }
 
 /// Picks according to the mode. `seed` varies the random pick; `skip` avoids repeating.
@@ -95,6 +117,12 @@ pub fn pick<'a>(pics: &'a [Pic], s: &Settings, seed: u64, skip: Option<&str>) ->
 
 /// Decodes, scales to fit `max_w`×`max_h` and encodes as JPEG. Returns a data URL.
 pub fn to_data_url(path: &Path, max_w: u32, max_h: u32) -> Result<String, String> {
+    if let Some(hdr) = crate::hdr::load_tonemapped(path, max_w, max_h) {
+        let rgb = hdr?;
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(rgb).write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
+        return Ok(format!("data:image/jpeg;base64,{}", base64(&buf)));
+    }
     let img = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
@@ -148,7 +176,7 @@ fn seed() -> u64 {
 pub async fn wall_picture(skip: Option<String>) -> Result<Option<WallPicture>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let s = crate::settings::load();
-        let pics = index(&s.wall_folders, s.wall_subfolders);
+        let pics = index(&s.wall_folders, s.wall_subfolders, s.wall_hdr != "skip");
         // a few attempts in case a file can't be decoded
         for attempt in 0..5u64 {
             let Some(p) = pick(&pics, &s, seed().wrapping_add(attempt * 7919), skip.as_deref()) else { return Ok(None) };
@@ -171,14 +199,15 @@ pub async fn wall_picture(skip: Option<String>) -> Result<Option<WallPicture>, S
 }
 
 #[tauri::command]
-pub async fn wall_stats(folders: Vec<WallFolder>, subfolders: bool) -> Result<Vec<FolderStats>, String> {
+pub async fn wall_stats(folders: Vec<WallFolder>, subfolders: bool, hdr: Option<bool>) -> Result<Vec<FolderStats>, String> {
+    let hdr = hdr.unwrap_or(true);
     tauri::async_runtime::spawn_blocking(move || {
         folders
             .iter()
             .map(|f| {
                 let p = Path::new(&f.path);
-                let (pics, skipped) = if p.is_dir() { index_folder(p, subfolders) } else { (vec![], 0) };
-                FolderStats { path: f.path.clone(), exists: p.is_dir(), pictures: pics.len(), skipped }
+                let (pics, skipped, hdr_n) = if p.is_dir() { index_folder(p, subfolders, hdr) } else { (vec![], 0, 0) };
+                FolderStats { path: f.path.clone(), exists: p.is_dir(), pictures: pics.len(), skipped, hdr: hdr_n }
             })
             .collect()
     })
@@ -188,9 +217,9 @@ pub async fn wall_stats(folders: Vec<WallFolder>, subfolders: bool) -> Result<Ve
 
 /// The newest few pictures, as small thumbnails for Settings.
 #[tauri::command]
-pub async fn wall_thumbs(folders: Vec<WallFolder>, subfolders: bool, count: usize) -> Result<Vec<WallThumb>, String> {
+pub async fn wall_thumbs(folders: Vec<WallFolder>, subfolders: bool, count: usize, hdr: Option<bool>) -> Result<Vec<WallThumb>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut pics = index(&folders, subfolders);
+        let mut pics = index(&folders, subfolders, hdr.unwrap_or(true));
         pics.sort_by(|a, b| b.mtime.cmp(&a.mtime));
         pics.iter()
             .take(count.min(12))
@@ -214,10 +243,16 @@ mod tests {
         image::RgbImage::from_pixel(10, 10, image::Rgb([1, 2, 3])).save(d.join("sub").join("small.jpg")).unwrap();
         std::fs::write(d.join("hdr.jxr"), b"x").unwrap();
         std::fs::write(d.join("notes.txt"), b"x").unwrap();
-        let (top, skipped) = index_folder(&d, false);
+        let (top, skipped, _) = index_folder(&d, false, false);
         assert_eq!((top.len(), skipped), (1, 1));
+        let (top, skipped, hdr) = index_folder(&d, false, true);
+        assert_eq!((top.len(), skipped, hdr), (2, 0, 1), "with HDR on, the .jxr is listed");
+        std::fs::write(d.join("hdr.png"), b"x").unwrap();
+        let (top, _, hdr) = index_folder(&d, false, true);
+        assert_eq!((top.len(), hdr), (2, 0), "a .jxr with an SDR twin is a duplicate");
+        std::fs::remove_file(d.join("hdr.png")).unwrap();
         let folders = vec![WallFolder { path: d.to_string_lossy().into_owned(), enabled: true }];
-        let all = index(&folders, true);
+        let all = index(&folders, true, false);
         assert_eq!(all.len(), 2);
         let mut s = Settings::default();
         s.wall_mode = "favorite".into();

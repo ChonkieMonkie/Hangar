@@ -1,3 +1,8 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Hangar's own settings (`%LOCALAPPDATA%\Hangar\settings.json`) and helpers for Hangar's data
 //! folder. Nothing here touches DCS folders. The file is only written when the user saves.
 
@@ -108,6 +113,8 @@ pub struct Settings {
     pub launch_presets: Vec<LaunchPreset>,
     pub default_preset: Option<String>,
     pub mod_sets: Vec<ModSet>,
+    /// Record updater runs for ETA research (ROADMAP #14). Off by default.
+    pub record_updates: bool,
 }
 
 impl Default for Settings {
@@ -128,6 +135,7 @@ impl Default for Settings {
             ],
             default_preset: Some("normal".into()),
             mod_sets: Vec::new(),
+            record_updates: false,
         }
     }
 }

@@ -1,3 +1,9 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
   // Inline stroke icons (no icon font, no network). B-024 icon system:
   // drawn on a 20 x 20 grid, 2 px stroke, straight lines on whole pixels, 2 px padding.

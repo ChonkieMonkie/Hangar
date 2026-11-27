@@ -1,8 +1,15 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Scores ETA estimators against recorded updater runs. Reads only recordings, never DCS files.
 //!
 //!   cargo run --release --example eta_replay -- [paths...] [--watcher <x-uia.txt>]... [--out report.md] [--csv dir]
 //!
-//! Paths may be recording files or folders (all `run-*.ndjson`). Without paths:
+//! Paths may be recording files, ETA research exports (`*.zip`, see share.rs) or folders (all
+//! `run-*.ndjson` and `*.zip`). Runs from an export are named `<exportId>/<NN>` and are also
+//! scored per sender, so one fast connection does not dominate. Without paths:
 //! `%LOCALAPPDATA%\Hangar\recordings`. See docs/ETA.md.
 
 use std::collections::BTreeMap;
@@ -106,7 +113,7 @@ fn collect_inputs(args: &[String]) -> (Vec<PathBuf>, Vec<PathBuf>, Option<PathBu
             let mut v: Vec<PathBuf> = std::fs::read_dir(&f)
                 .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| {
                     let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    n.starts_with("run-") && n.ends_with(".ndjson")
+                    (n.starts_with("run-") && n.ends_with(".ndjson")) || n.to_ascii_lowercase().ends_with(".zip")
                 }).collect())
                 .unwrap_or_default();
             v.sort();
@@ -123,6 +130,13 @@ fn main() {
     let (files, watchers, out, csv) = collect_inputs(&args);
     let mut recs = Vec::new();
     for f in &files {
+        if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+            match replay::load_zip(f) {
+                Ok(v) => recs.extend(v),
+                Err(e) => eprintln!("skip: {e}"),
+            }
+            continue;
+        }
         match replay::load_recording(f) {
             Ok(r) => recs.push(r),
             Err(e) => eprintln!("skip: {e}"),
@@ -179,6 +193,44 @@ fn main() {
         let _ = writeln!(md, "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.0} % ({} runs) |",
             i + 1, a.name, pct(a.mape), pct(a.worst_run_mape), secs(a.mae), signed_pct(a.bias), secs(a.jitter),
             secs(a.first), pct(a.coverage), a.avail * 100.0, a.runs);
+    }
+
+    // per sender (exports are named "<exportId>/<NN>", local recordings count as "local")
+    let sender = |name: &str| name.split_once('/').map(|(a, _)| a.to_string()).unwrap_or_else(|| "local".into());
+    let mut senders: Vec<String> = results.iter().map(|r| sender(&r.name)).collect();
+    senders.sort();
+    senders.dedup();
+    if senders.len() > 1 {
+        let shown: Vec<String> = agg
+            .iter()
+            .take(3)
+            .map(|a| a.name.clone())
+            .chain(agg.iter().skip(3).filter(|a| a.name.starts_with("ED (") || a.name.starts_with("v0.1")).map(|a| a.name.clone()))
+            .collect();
+        let _ = writeln!(md, "\n## Per sender\n");
+        let _ = writeln!(md, "MAPE per sender. The last row weighs every sender equally.\n");
+        let _ = writeln!(md, "| Sender | Runs | {} |", shown.join(" | "));
+        let _ = writeln!(md, "|---|---|{}", "---|".repeat(shown.len()));
+        let mut per_est: Vec<Vec<f64>> = vec![Vec::new(); shown.len()];
+        for snd in &senders {
+            let subset: Vec<&RunResult> = results.iter().filter(|r| &sender(&r.name) == snd).collect();
+            let owned: Vec<RunResult> = subset.iter().map(|r| (*r).clone()).collect();
+            let ag = aggregate(&owned);
+            let cells: Vec<String> = shown
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    let m = ag.iter().find(|a| &a.name == n).and_then(|a| a.mape);
+                    if let Some(x) = m {
+                        per_est[i].push(x);
+                    }
+                    pct(m)
+                })
+                .collect();
+            let _ = writeln!(md, "| {} | {} | {} |", snd, subset.len(), cells.join(" | "));
+        }
+        let eq: Vec<String> = per_est.iter().map(|v| pct((!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64))).collect();
+        let _ = writeln!(md, "| **all senders equal** | {} | {} |", results.len(), eq.join(" | "));
     }
 
     let _ = writeln!(md, "\n## Median |relative error| per stage of the phase\n");
@@ -247,7 +299,7 @@ fn main() {
                 }
                 c.push('\n');
             }
-            let stem = Path::new(&r.name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let stem = Path::new(&r.name.replace('/', "-")).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let _ = std::fs::write(dir.join(format!("{stem}.csv")), c);
         }
     }

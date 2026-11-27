@@ -1,3 +1,8 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Interpreting the texts of ED's updater window (read with UI Automation elsewhere).
 //! Pure functions, no Windows calls, so the replay tool can use the same parser.
 

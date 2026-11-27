@@ -1,3 +1,8 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Hangar - an unofficial updater & launcher for DCS World.
 //! Not affiliated with or endorsed by Eagle Dynamics SA.
 //!
@@ -17,6 +22,7 @@ pub mod mods;
 pub mod recorder;
 pub mod replay;
 pub mod settings;
+pub mod share;
 mod updater;
 pub mod wall;
 pub mod window;
@@ -97,6 +103,12 @@ pub fn run() {
             commands::launch_dcs,
             commands::reveal_path,
             commands::open_ed_page,
+            commands::open_project_link,
+            commands::license_text,
+            commands::third_party_notices,
+            share::recordings_overview,
+            share::recordings_export,
+            share::recordings_delete_all,
             commands::current_job,
         ])
         .run(tauri::generate_context!())

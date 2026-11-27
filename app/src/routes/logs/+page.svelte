@@ -1,3 +1,9 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
   import Icon from "$lib/components/Icon.svelte";
   import { api, type DcsLog, type LogGroup } from "$lib/api";
@@ -70,7 +76,7 @@
 
 <header class="top">
   <div>
-    <div class="bay">BAY 01 · LOGS</div>
+    <div class="bay">HANGAR {hangar.version}</div>
     <h1>Logs</h1>
   </div>
   <div class="tabs" role="tablist">

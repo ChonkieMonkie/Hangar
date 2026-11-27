@@ -1,3 +1,8 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 // Typed wrappers around the Rust commands (src-tauri/src). Field names are camelCase (serde).
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -114,7 +119,21 @@ export interface Settings {
   launchPresets: LaunchPreset[];
   defaultPreset: string | null;
   modSets: ModSet[];
+  /** ETA research: record updater runs (off by default). */
+  recordUpdates: boolean;
 }
+
+// ------------------------------------------------------------------ ETA research (share.rs)
+export interface RecordingsOverview {
+  enabled: boolean;
+  folder: string | null;
+  count: number;
+  bytes: number;
+  /** "YYYYMMDD-HHMMSS" (UTC) */
+  oldest: string | null;
+  newest: string | null;
+}
+export interface ExportSummary { recordings: number; bytes: number; path: string; }
 
 // ------------------------------------------------------------------ wall (wall.rs)
 export interface WallPicture { path: string; name: string; dataUrl: string; total: number; }
@@ -186,6 +205,12 @@ export const api = {
 
   launchDcs: (installPath: string, launch: string | null, presetId: string) => invoke<void>("launch_dcs", { installPath, launch, presetId }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  recordingsOverview: () => invoke<RecordingsOverview>("recordings_overview"),
+  recordingsExport: (path: string) => invoke<ExportSummary>("recordings_export", { path }),
+  recordingsDeleteAll: () => invoke<number>("recordings_delete_all"),
+  openProjectLink: (which: "source" | "issues" | "gpl") => invoke<void>("open_project_link", { which }),
+  licenseText: () => invoke<string>("license_text"),
+  thirdPartyNotices: () => invoke<string>("third_party_notices"),
   /** Opens one of ED's public pages in the default browser (fixed list, built in Rust). */
   openEdPage: (page: "changelog" | "newsletters" | "news" | "version", version: string | null = null) =>
     invoke<void>("open_ed_page", { page, version }),

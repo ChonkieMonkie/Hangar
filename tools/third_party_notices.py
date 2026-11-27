@@ -1,0 +1,136 @@
+# Hangar - a community-made updater and launcher for DCS World.
+# Copyright (C) 2026 ChonkieMonkie
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
+"""Writes THIRD-PARTY-NOTICES.txt: the licenses of the third-party code built into Hangar.
+
+Usage (from the repository root):  python tools/third_party_notices.py
+
+Rust: every crate the hangar crate depends on for Windows (normal dependencies, from
+`cargo metadata`), with the license files the crate ships. npm: the packages that end up in the
+frontend bundle (the app's dependencies plus svelte and @sveltejs/kit, with their dependencies).
+Identical license texts are printed once with the list of packages that use them.
+Run it again whenever dependencies change. The result is built into the exe (About box).
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP = os.path.join(ROOT, "app")
+TAURI = os.path.join(APP, "src-tauri")
+OUT = os.path.join(ROOT, "THIRD-PARTY-NOTICES.txt")
+LICENSE_PREFIXES = ("license", "licence", "copying", "notice", "unlicense")
+
+
+def license_files(folder):
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    files = [n for n in names if n.lower().startswith(LICENSE_PREFIXES) and os.path.isfile(os.path.join(folder, n))]
+    # dual "MIT OR Apache-2.0": the MIT text is enough (we may choose either)
+    mit = [n for n in files if "mit" in n.lower()]
+    apache = [n for n in files if "apache" in n.lower()]
+    if mit and apache:
+        files = [n for n in files if n not in apache]
+    return files
+
+
+def read(path):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read().strip().replace("\r\n", "\n")
+
+
+def rust_packages():
+    meta = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--format-version", "1", "--filter-platform", "x86_64-pc-windows-msvc", "--locked"],
+        cwd=TAURI, text=True, encoding="utf-8"))
+    pkgs = {p["id"]: p for p in meta["packages"]}
+    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+    root = meta["resolve"]["root"]
+    seen, stack = set(), [root]
+    while stack:
+        nid = stack.pop()
+        for d in nodes[nid]["deps"]:
+            kinds = {k.get("kind") for k in d.get("dep_kinds", [])}
+            if (None in kinds or "normal" in kinds) and d["pkg"] not in seen:
+                seen.add(d["pkg"])
+                stack.append(d["pkg"])
+    out = []
+    for pid in seen:
+        p = pkgs[pid]
+        folder = os.path.dirname(p["manifest_path"])
+        out.append({
+            "name": p["name"], "version": p["version"], "license": p.get("license") or "see files",
+            "url": p.get("repository") or p.get("homepage") or "",
+            "texts": [read(os.path.join(folder, f)) for f in license_files(folder)],
+        })
+    return out
+
+
+def npm_packages():
+    with open(os.path.join(APP, "package.json"), encoding="utf-8") as f:
+        pj = json.load(f)
+    todo = list(pj.get("dependencies", {}).keys()) + ["svelte", "@sveltejs/kit"]
+    seen, out = set(), []
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        folder = os.path.join(APP, "node_modules", *name.split("/"))
+        try:
+            with open(os.path.join(folder, "package.json"), encoding="utf-8") as f:
+                p = json.load(f)
+        except OSError:
+            continue
+        todo.extend(p.get("dependencies", {}).keys())
+        repo = p.get("repository")
+        out.append({
+            "name": name, "version": p.get("version", "?"),
+            "license": p.get("license") if isinstance(p.get("license"), str) else "see files",
+            "url": (repo.get("url") if isinstance(repo, dict) else repo) or p.get("homepage") or "",
+            "texts": [read(os.path.join(folder, f)) for f in license_files(folder)],
+        })
+    return out
+
+
+def main():
+    groups = {}
+    missing = []
+    for eco, pkgs in (("Rust crate", rust_packages()), ("npm package", npm_packages())):
+        for p in sorted(pkgs, key=lambda x: (x["name"], x["version"])):
+            label = f"{p['name']} {p['version']} ({eco}, {p['license']})" + (f" {p['url']}" if p["url"] else "")
+            if not p["texts"]:
+                missing.append(label)
+                continue
+            text = "\n\n".join(p["texts"])
+            key = hashlib.sha256(text.encode()).hexdigest()
+            groups.setdefault(key, {"text": text, "pkgs": []})["pkgs"].append(label)
+    lines = [
+        "THIRD-PARTY NOTICES FOR HANGAR",
+        "",
+        "Hangar is licensed under the GNU GPL v3 or later (see LICENSE). It includes the",
+        "third-party software listed below, under the licenses shown. Generated by",
+        "tools/third_party_notices.py.",
+        "",
+        "Hangar uses Microsoft Edge WebView2, which is part of Windows and not included here.",
+    ]
+    for g in sorted(groups.values(), key=lambda g: g["pkgs"][0].lower()):
+        lines += ["", "=" * 78, "", "Used by:"] + [f"  - {x}" for x in g["pkgs"]] + ["", g["text"]]
+    if missing:
+        lines += ["", "=" * 78, "", "No license file in the package; license as declared by the package:"]
+        lines += [f"  - {x}" for x in missing]
+    with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    n = sum(len(g["pkgs"]) for g in groups.values()) + len(missing)
+    print(f"{OUT}: {n} packages, {len(groups)} distinct license texts, {len(missing)} without a file, {os.path.getsize(OUT)} bytes")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

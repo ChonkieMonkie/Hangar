@@ -1,3 +1,9 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
   import "@fontsource/inter/400.css";
   import "@fontsource/inter/500.css";
@@ -69,7 +75,7 @@
 
 <div class="shell">
   <nav aria-label="Main">
-    <div class="brand">
+    <a class="brand" href="/settings?section=about" title="About Hangar">
       <!-- Logo E "Bay marker" (B-024) -->
       <svg viewBox="0 0 48 48" width="36" height="36" aria-hidden="true">
         <path d="M7 15V7h8M33 7h8v8M41 33v8h-8M15 41H7v-8" style="stroke: var(--ink)"></path>
@@ -80,7 +86,7 @@
         <div class="name">HANGAR</div>
         <div class="tag">COMMUNITY-MADE<br />UPDATER &amp; LAUNCHER</div>
       </div>
-    </div>
+    </a>
 
     <div class="links">
       {#each nav as item}
@@ -125,7 +131,9 @@
 <style>
   .shell { display: flex; min-height: 100vh; }
   nav { width: 236px; flex: none; background: var(--rail); border-right: 1px solid #20282c; padding: 24px 14px; display: flex; flex-direction: column; gap: 28px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
-  .brand { display: flex; align-items: center; gap: 12px; padding: 0 10px; }
+  .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px; border-radius: 8px; color: inherit; text-decoration: none; }
+  .brand:hover { background: #171d20; }
+  .brand:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 2px; }
   .brand svg { fill: none; stroke: var(--phosphor); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
   .name { font-family: var(--font-head); font-weight: 700; font-size: 21px; letter-spacing: 0.22em; line-height: 1; }
   .tag { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; line-height: 1.45; color: var(--ink-3); margin-top: 6px; }

@@ -1,3 +1,8 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Mod manager (B-005): a mod is a set of files in Saved Games\DCS that Hangar tracks in a
 //! manifest. Switching it off moves its files into Hangar's vault, switching it on moves them
 //! back. Nothing in the DCS install folder is ever touched.

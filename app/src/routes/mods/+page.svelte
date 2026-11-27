@@ -1,3 +1,9 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
   import Icon from "$lib/components/Icon.svelte";
@@ -100,7 +106,7 @@
 
 <header class="top">
   <div>
-    <div class="bay">BAY 01 · MODS</div>
+    <div class="bay">HANGAR {hangar.version}</div>
     <h1>Mods</h1>
     <div class="faint small">{active} active · {(ov?.mods.length ?? 0) - active} off{conflicts ? ` · ${conflicts} with conflicts` : ""}</div>
   </div>

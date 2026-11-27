@@ -1,3 +1,9 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
   import Icon from "$lib/components/Icon.svelte";
   import LineChart from "$lib/components/LineChart.svelte";
@@ -31,7 +37,7 @@
 
 <header class="top">
   <div>
-    <div class="bay">BAY 01 · UPDATE</div>
+    <div class="bay">HANGAR {hangar.version}</div>
     <h1>{running ? "Updating DCS World" : finished ? "Update finished" : "Update"}</h1>
     {#if running || finished}<div class="mono muted sub">elapsed {duration(m?.elapsedS)}{m?.action ? ` · ${m.action}` : ""}{m && !m.startedByHangar ? " · started outside Hangar" : ""}</div>{/if}
   </div>

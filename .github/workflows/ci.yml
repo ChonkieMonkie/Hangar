@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: ["**"]   # tags are built by release.yml
   pull_request:
 
 jobs:
@@ -12,6 +13,9 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+      - name: GPL notice in every source file
+        working-directory: .
+        run: python tools/gpl_headers.py --check
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -34,4 +38,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: hangar-exe
-          path: app/src-tauri/target/release/hangar.exe
+          path: |
+            app/src-tauri/target/release/hangar.exe
+            LICENSE
+            THIRD-PARTY-NOTICES.txt

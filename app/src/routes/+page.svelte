@@ -1,3 +1,9 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
@@ -72,7 +78,7 @@
 </script>
 
 <header>
-  <div class="bay">BAY 01 · OVERVIEW</div>
+  <div class="bay">HANGAR {hangar.version}</div>
   <h1>Overview</h1>
 </header>
 

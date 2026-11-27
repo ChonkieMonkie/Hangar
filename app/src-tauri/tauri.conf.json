@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Hangar",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "identifier": "io.github.chonkiemonkie.hangar",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +29,9 @@
     "targets": ["nsis"],
     "publisher": "ChonkieMonkie",
     "copyright": "Copyright (C) 2026 ChonkieMonkie. GPL-3.0-or-later.",
-    "shortDescription": "Unofficial updater & launcher for DCS World",
+    "shortDescription": "Community-made updater & launcher for DCS World",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../../LICENSE",
     "longDescription": "Not affiliated with or endorsed by Eagle Dynamics SA. THIS MATERIAL IS NOT MADE OR SUPPORTED BY EAGLE DYNAMICS SA.",
     "icon": [
       "icons/32x32.png",

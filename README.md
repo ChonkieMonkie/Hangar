@@ -25,6 +25,7 @@ Hangar is an unofficial, open-source front end for the standalone version of DCS
 - **Launch presets.** Normal, VR (OpenXR) or flat screen, or your own command-line flags.
 - **Hangar wall.** Your own screenshots on the start screen, from folders you pick.
 - **Links to ED's news.** The changelog, newsletters and "what's new in this version" open in your browser.
+- **ETA research (optional).** If you want to help improve the time estimate, switch on recording under Settings › ETA research and export an anonymized file to share. It is off by default. The file holds only progress numbers: no dates, paths, names or module names. Hangar never sends it anywhere, so you choose who gets it.
 
 ## What Hangar doesn't do
 
@@ -42,7 +43,7 @@ Where it writes:
 
 | Where | What | When |
 |---|---|---|
-| `%LOCALAPPDATA%\Hangar` | settings, mod vault, update recordings, an archive of updater logs | while it runs |
+| `%LOCALAPPDATA%\Hangar` | settings, mod vault, an archive of updater logs, ETA recordings (only if you switch them on) | while it runs |
 | `Saved Games\DCS*` | switching mods on and off, restoring a backup | only when you click |
 | your backup folder | snapshots | when you back up, or before an update |
 
@@ -72,11 +73,11 @@ The code is Tauri 2 (Rust) with a Svelte 5 frontend.
 
 ## Project status
 
-Version 0.2.1, in active development, Windows only. Planned next: compression for backups and the mod vault, hiding the updater's window while Hangar shows its progress, and editing DCS graphics settings with presets.
+Version 0.2.2, in active development, Windows only. Planned next: compression for backups and the mod vault, hiding the updater's window while Hangar shows its progress, and editing DCS graphics settings with presets.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please don't add any of ED's files, logos, images or text to the repository. Hangar must stay clearly separate from DCS and only use ED's programs from the outside. Contributions are accepted under the same license as the project.
+Issues and pull requests are welcome. Every source file starts with a short GPL notice (`python tools/gpl_headers.py` adds it, and CI checks it). If you change dependencies, run `python tools/third_party_notices.py` to update `THIRD-PARTY-NOTICES.txt`. Please don't add any of ED's files, logos, images or text to the repository. Hangar must stay clearly separate from DCS and only use ED's programs from the outside. Contributions are accepted under the same license as the project.
 
 ## Trademarks
 
@@ -87,3 +88,5 @@ DCS World and Eagle Dynamics are trademarks of Eagle Dynamics SA. They are used 
 Copyright (C) 2026 ChonkieMonkie.
 
 Hangar is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License](LICENSE) as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the license for details.
+
+Hangar includes third-party software under its own licenses, listed in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) and in the app under Settings › About.

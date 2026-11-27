@@ -1,8 +1,18 @@
+<!--
+  Hangar - a community-made updater and launcher for DCS World.
+  Copyright (C) 2026 ChonkieMonkie
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+-->
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
+  import { page } from "$app/state";
+  import { open, save } from "@tauri-apps/plugin-dialog";
+  import { getVersion } from "@tauri-apps/api/app";
   import Icon from "$lib/components/Icon.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import { api, type FolderStats, type Settings, type WallThumb } from "$lib/api";
+  import { api, type FolderStats, type Settings, type WallThumb, type RecordingsOverview, type ExportSummary } from "$lib/api";
+  import { bytes } from "$lib/format";
   import { hangar, loadSettings, saveSettings } from "$lib/state.svelte";
 
   let s = $state<Settings | null>(null);
@@ -10,7 +20,14 @@
   let thumbs = $state<WallThumb[]>([]);
   let error = $state<string | null>(null);
   let saved = $state(false);
-  let section = $state<"wall" | "launch">("wall");
+  type Section = "wall" | "launch" | "research" | "about";
+  const SECTIONS: Section[] = ["wall", "launch", "research", "about"];
+  let section = $state<Section>("wall");
+  // /settings?section=about (the logo in the menu links here)
+  $effect(() => {
+    const q = page.url.searchParams.get("section") as Section | null;
+    if (q && SECTIONS.includes(q)) section = q;
+  });
 
   $effect(() => {
     if (!s) {
@@ -70,6 +87,64 @@
     { id: "favorite", label: "One favorite", desc: "Click a picture below to pick it" },
   ] as const;
 
+  // ---------------------------------------------------------------- ETA research
+  let rec = $state<RecordingsOverview | null>(null);
+  let exported = $state<ExportSummary | null>(null);
+  let exporting = $state(false);
+  let confirmDelete = $state(false);
+  async function refreshRec() {
+    rec = await api.recordingsOverview().catch(() => null);
+  }
+  $effect(() => {
+    if (section === "research" && !rec) void refreshRec();
+  });
+  function stamp(st: string | null): string {
+    if (!st) return "—";
+    return `${st.slice(0, 4)}-${st.slice(4, 6)}-${st.slice(6, 8)} ${st.slice(9, 11)}:${st.slice(11, 13)} UTC`;
+  }
+  function setRecording(on: boolean) {
+    if (!s) return;
+    s.recordUpdates = on;
+    persist();
+    setTimeout(refreshRec, 300);
+  }
+  async function exportRecordings() {
+    const today = new Date().toISOString().slice(0, 10);
+    const path = await save({ title: "Save ETA recordings", defaultPath: `hangar-eta-recordings-${today}.zip`, filters: [{ name: "Zip file", extensions: ["zip"] }] });
+    if (!path) return;
+    exporting = true;
+    error = null;
+    try {
+      exported = await api.recordingsExport(path);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      exporting = false;
+    }
+  }
+  async function deleteRecordings() {
+    confirmDelete = false;
+    exported = null;
+    await api.recordingsDeleteAll().catch((e) => (error = String(e)));
+    await refreshRec();
+  }
+
+  // ---------------------------------------------------------------- About
+  let version = $state("");
+  let shown = $state<"license" | "notices" | null>(null);
+  let longText = $state("");
+  onMount(() => {
+    getVersion().then((v) => (version = v)).catch(() => {});
+  });
+  async function toggleText(which: "license" | "notices") {
+    if (shown === which) {
+      shown = null;
+      return;
+    }
+    longText = which === "license" ? await api.licenseText() : await api.thirdPartyNotices();
+    shown = which;
+  }
+
   function addPreset() {
     if (!s) return;
     const id = "preset-" + Date.now().toString(36);
@@ -85,7 +160,7 @@
 
 <header class="top">
   <div>
-    <div class="bay">BAY 01 · SETTINGS</div>
+    <div class="bay">HANGAR {hangar.version}</div>
     <h1>Settings</h1>
   </div>
   {#if saved}<span class="chip ok"><span class="dot"></span>Saved</span>{/if}
@@ -98,6 +173,8 @@
     <nav class="sections" aria-label="Settings sections">
       <button class:on={section === "wall"} onclick={() => (section = "wall")}>Hangar wall</button>
       <button class:on={section === "launch"} onclick={() => (section = "launch")}>Launch presets</button>
+      <button class:on={section === "research"} onclick={() => (section = "research")}>ETA research</button>
+      <button class:on={section === "about"} onclick={() => (section = "about")}>About</button>
     </nav>
 
     <div class="content">
@@ -150,6 +227,96 @@
               {/each}
             </div>
           {/if}
+        </section>
+      {:else if section === "research"}
+        <section class="card">
+          <div>
+            <h2>ETA research</h2>
+            <p class="muted small">Help make Hangar's time estimate better. Hangar can record how your downloads and updates progress. You can then export the recordings as one file and send it to the developer yourself. Hangar never sends anything on its own.</p>
+          </div>
+          <div class="toggle">
+            <Switch checked={s.recordUpdates} label="Record downloads and updates" onchange={(v) => setRecording(v)} />
+            <div>
+              <div class="tname">Record downloads and updates</div>
+              <div class="faint small">Off by default. While it is on, every run of ED's updater on this PC is recorded.</div>
+            </div>
+          </div>
+          <div class="recstat">
+            {#if rec?.count}
+              <span><b>{rec.count}</b> {rec.count === 1 ? "recording" : "recordings"} · {bytes(rec.bytes)}</span>
+              <span class="faint small">{stamp(rec.oldest)} – {stamp(rec.newest)} · the oldest are removed above 50 recordings or 200 MB</span>
+            {:else}
+              <span class="muted">No recordings yet.</span>
+            {/if}
+          </div>
+          <div class="actions">
+            <button class="btn primary" onclick={exportRecordings} disabled={!rec?.count || exporting}><Icon name="external" size={16} />{exporting ? "Exporting…" : "Export for sharing…"}</button>
+            <button class="btn" onclick={() => rec?.folder && api.revealPath(rec.folder)} disabled={!rec?.folder}><Icon name="folder" size={16} />Open folder</button>
+            {#if !confirmDelete}
+              <button class="btn danger" onclick={() => (confirmDelete = true)} disabled={!rec?.count}><Icon name="trash" size={16} />Delete all</button>
+            {:else}
+              <span class="confirm small">Delete all {rec?.count} recordings? This can't be undone.
+                <button class="btn small danger" onclick={deleteRecordings}>Delete</button>
+                <button class="btn small" onclick={() => (confirmDelete = false)}>Cancel</button>
+              </span>
+            {/if}
+          </div>
+          {#if exported}
+            <div class="notice good"><Icon name="check" size={16} color="var(--phosphor)" />Saved {exported.recordings} {exported.recordings === 1 ? "recording" : "recordings"} ({bytes(exported.bytes)}).
+              <button class="btn small" onclick={() => api.revealPath(exported!.path)}>Show file</button></div>
+          {/if}
+        </section>
+        <section class="card">
+          <div class="label">What the exported file contains</div>
+          <div class="cols">
+            <div>
+              <div class="tname">Included</div>
+              <ul class="small">
+                <li>Time since the start of each run (no dates or clock times)</li>
+                <li>The progress numbers from ED's updater window: downloaded, unpacked, speed, ED's estimate</li>
+                <li>Network and disk use as changes during the run</li>
+                <li>Hangar's own estimate, the phase and the number of updater processes</li>
+                <li>A few updater log lines rebuilt from known patterns, such as "To download: … bytes"</li>
+              </ul>
+            </div>
+            <div>
+              <div class="tname">Not included</div>
+              <ul class="small">
+                <li>Dates, clock times, folders and paths</li>
+                <li>Your user name, computer name or account</li>
+                <li>File names and module names, so nobody can see what you own</li>
+                <li>The updater's window text and other log lines</li>
+                <li>How much free space your disk has</li>
+              </ul>
+            </div>
+          </div>
+          <p class="faint small">Exporting does not change the recordings on this PC. The file is a normal zip, so you can open it and look before you send it.</p>
+        </section>
+      {:else if section === "about"}
+        <section class="card about">
+          <div class="abouthead">
+            <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true" class="logo">
+              <path d="M7 15V7h8M33 7h8v8M41 33v8h-8M15 41H7v-8" style="stroke: var(--ink)"></path>
+              <path d="M18 15v18M30 15v18"></path>
+              <path d="M21 24h6" style="stroke-linecap: butt"></path>
+            </svg>
+            <div>
+              <h2>Hangar {version}</h2>
+              <div class="muted small">A community-made updater and launcher for DCS World</div>
+              <div class="small">Copyright (C) 2026 ChonkieMonkie</div>
+            </div>
+          </div>
+          <p class="small warranty">This program comes with ABSOLUTELY NO WARRANTY. This is free software, and you are welcome to redistribute it under the terms of the GNU General Public License, version 3 or (at your option) any later version.</p>
+          <div class="actions">
+            <button class="btn" class:active={shown === "license"} onclick={() => toggleText("license")}>View license</button>
+            <button class="btn" class:active={shown === "notices"} onclick={() => toggleText("notices")}>Third-party licenses</button>
+            <button class="btn" onclick={() => api.openProjectLink("source")}>Source code<Icon name="external" size={14} /></button>
+            <button class="btn" onclick={() => api.openProjectLink("issues")}>Report an issue<Icon name="external" size={14} /></button>
+          </div>
+          {#if shown}
+            <pre class="longtext" aria-label={shown === "license" ? "GNU General Public License" : "Third-party licenses"}>{longText}</pre>
+          {/if}
+          <p class="faint small">Not affiliated with or endorsed by Eagle Dynamics SA. THIS MATERIAL IS NOT MADE OR SUPPORTED BY EAGLE DYNAMICS SA. DCS World is a trademark of Eagle Dynamics SA.</p>
         </section>
       {:else}
         <section class="card">
@@ -208,4 +375,20 @@
   .pargs { flex: 1; min-width: 0; font-size: 12.5px; }
   .notice { display: flex; gap: 8px; align-items: center; font-size: 13px; }
   .notice.bad { color: var(--warning-soft); }
+  .notice.good { color: var(--ink); flex-wrap: wrap; }
+  .card p { margin: 6px 0 0; line-height: 1.5; }
+  .toggle { display: flex; gap: 14px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 8px; }
+  .tname { font-weight: 600; }
+  .recstat { display: flex; flex-direction: column; gap: 4px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .confirm { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid #4a2a2d; border-radius: 8px; background: var(--warning-bg); }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .cols ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.6; color: var(--ink-soft); }
+  .abouthead { display: flex; gap: 16px; align-items: center; }
+  .abouthead h2 { font-size: 22px; }
+  .abouthead > div { display: flex; flex-direction: column; gap: 4px; }
+  .logo { fill: none; stroke: var(--phosphor); stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .warranty { max-width: 680px; }
+  .btn.active { border-color: var(--phosphor); }
+  .longtext { max-height: 420px; overflow: auto; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--well); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; color: var(--ink-soft); }
 </style>

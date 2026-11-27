@@ -1,3 +1,8 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Offline replay of recorded updater runs: feeds each recorded window reading to every ETA
 //! estimator (causally, one tick at a time) and scores the answers against what actually
 //! happened. Used by `examples/eta_replay.rs`. See docs/ETA.md.
@@ -46,7 +51,42 @@ pub struct Recording {
 /// Reads a Hangar recording (`run-*.ndjson`, see recorder.rs).
 pub fn load_recording(path: &Path) -> Result<Recording, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut rec = Recording { name: path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), ..Default::default() };
+    parse_recording(&text, path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// Reads an anonymized export from ETA research (share.rs): a zip of format-2 recordings.
+/// Each recording is named `<exportId>/<NN>` so runs from one sender can be grouped.
+pub fn load_zip(path: &Path) -> Result<Vec<Recording>, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if let Ok(mut m) = z.by_name("manifest.json") {
+        let mut t = String::new();
+        if m.read_to_string(&mut t).is_ok() {
+            if let Some(x) = serde_json::from_str::<Value>(&t).ok().and_then(|v| v["exportId"].as_str().map(str::to_string)) {
+                id = x;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for i in 0..z.len() {
+        let mut e = z.by_index(i).map_err(|e| e.to_string())?;
+        let name = e.name().to_string();
+        if !(name.starts_with("recordings/") && name.ends_with(".ndjson")) || e.size() > 64 * 1024 * 1024 {
+            continue;
+        }
+        let mut t = String::new();
+        e.read_to_string(&mut t).map_err(|e| format!("{name}: {e}"))?;
+        let stem = name.trim_start_matches("recordings/").trim_end_matches(".ndjson");
+        out.push(parse_recording(&t, format!("{id}/{stem}"))?);
+    }
+    Ok(out)
+}
+
+fn parse_recording(text: &str, name: String) -> Result<Recording, String> {
+    let path = std::path::PathBuf::from(&name);
+    let mut rec = Recording { name, ..Default::default() };
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -61,6 +101,26 @@ pub fn load_recording(path: &Path) -> Result<Recording, String> {
             Some("header") => {
                 rec.action = v["action"].as_str().map(str::to_string);
                 rec.install_seconds = v["installSeconds"].as_f64().unwrap_or(eta::V01_INSTALL_SECONDS);
+            }
+            Some("tick") if v.get("reading").is_some_and(Value::is_object) => {
+                // format 2 (anonymized export): the window reading is already parsed
+                let r = &v["reading"];
+                let num = |a: &[Value], i: usize| a.get(i).and_then(Value::as_f64);
+                let reading = WindowReading {
+                    downloaded: r["downloaded"].as_array().and_then(|a| Some((num(a, 0)?, num(a, 1)?, num(a, 2)?))),
+                    unpacking: r["unpacking"].as_array().and_then(|a| Some((num(a, 0)?, num(a, 1)?, num(a, 2)))),
+                    status: r["status"].as_str().map(str::to_string),
+                    current_file: None,
+                };
+                let h = &v["hangar"];
+                rec.ticks.push(Tick {
+                    t,
+                    reading,
+                    live: h["eta"].as_f64().map(|e| Pred { remaining: e, low: h["low"].as_f64(), high: h["high"].as_f64() }),
+                    procs: v["procs"].as_u64().unwrap_or(0) as usize,
+                    net_rx: v["netRx"].as_u64(),
+                    dl_bytes: v["dlBytes"].as_u64(),
+                });
             }
             Some("tick") => {
                 let readings = v["windows"]
@@ -414,6 +474,7 @@ pub fn score(name: &str, phase_ticks: &[f64], preds: &[Option<Pred>], tr: &Truth
     s
 }
 
+#[derive(Clone, Debug)]
 pub struct RunResult {
     pub name: String,
     pub action: Option<String>,

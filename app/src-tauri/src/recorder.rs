@@ -1,5 +1,12 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
 //! Records every observed updater run to `%LOCALAPPDATA%\Hangar\recordings\run-*.ndjson`
-//! (Hangar's own data, never a DCS folder). One JSON object per line:
+//! (Hangar's own data, never a DCS folder), only when the user has switched on
+//! Settings > ETA research > "Record downloads and updates" (off by default, ROADMAP #14).
+//! Old recordings beyond 50 files / 200 MB are removed (share.rs). One JSON object per line:
 //! `header`, then `tick` (once per monitor tick) and `log` (every new updater log line), then `end`.
 //! The replay tool (`examples/eta_replay.rs`, `replay.rs`) reads these to score ETA algorithms.
 //! See docs/ETA.md and B-016.
@@ -46,6 +53,9 @@ impl Recorder {
 
     /// Opens a new recording. Failure only disables recording; it never stops monitoring.
     pub fn start(action: Option<&str>, by_hangar: bool) -> Self {
+        if !crate::settings::load().record_updates {
+            return Self::disabled();
+        }
         let Some(dir) = recordings_dir() else { return Self::disabled() };
         if std::fs::create_dir_all(&dir).is_err() {
             return Self::disabled();
@@ -53,6 +63,7 @@ impl Recorder {
         let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let path = dir.join(format!("run-{}.ndjson", utc_stamp(unix)));
         let Ok(f) = File::create(&path) else { return Self::disabled() };
+        crate::share::prune(&dir, Some(&path));
         let mut r = Recorder { w: Some(BufWriter::new(f)), path: Some(path) };
         r.write(json!({
             "type": "header",

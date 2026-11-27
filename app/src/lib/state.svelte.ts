@@ -1,3 +1,9 @@
+// Hangar - a community-made updater and launcher for DCS World.
+// Copyright (C) 2026 ChonkieMonkie
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
+
+import { getVersion } from "@tauri-apps/api/app";
 import { api, type InstallReport, type MonitorState, type UpdaterRun, type Installation, type Settings, type JobProgress, type WallPicture } from "./api";
 
 /** App-wide state shared by all screens. */
@@ -14,6 +20,8 @@ export const hangar = $state({
    *  so switching tabs does not pick a new one. Cleared when the wall settings change. */
   wallPicture: null as WallPicture | null,
   wallPictureLoaded: false,
+  /** Hangar's own version (from tauri.conf.json), shown at the top of every page. */
+  version: "",
 });
 
 export async function loadSettings(): Promise<Settings> {
@@ -76,6 +84,7 @@ let started = false;
 export async function startHangar(): Promise<void> {
   if (started) return;
   started = true;
+  void getVersion().then((v) => (hangar.version = v)).catch(() => {});
   await refresh();
   void loadSettings().catch(() => {});
   await api.onJob((p) => {

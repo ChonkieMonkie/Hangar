@@ -1,6 +1,6 @@
 [package]
 name = "hangar"
-version = "0.2.1"
+version = "0.2.2"
 description = "Hangar - a community-made updater & launcher for DCS World. Not affiliated with Eagle Dynamics SA."
 authors = ["ChonkieMonkie"]
 license = "GPL-3.0-or-later"

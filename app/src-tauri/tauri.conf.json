@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Hangar",
+  "version": "0.2.1",
+  "identifier": "io.github.chonkiemonkie.hangar",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Hangar",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 980,
+        "minHeight": 640,
+        "backgroundColor": "#0D1012"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "ChonkieMonkie",
+    "copyright": "Copyright (C) 2026 ChonkieMonkie. GPL-3.0-or-later.",
+    "shortDescription": "Unofficial updater & launcher for DCS World",
+    "longDescription": "Not affiliated with or endorsed by Eagle Dynamics SA. THIS MATERIAL IS NOT MADE OR SUPPORTED BY EAGLE DYNAMICS SA.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

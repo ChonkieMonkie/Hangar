@@ -1,0 +1,9 @@
+# Local probe/watch reports: contain local paths and user names. Never publish.
+investigation/
+
+# Claude's working notes and handoff docs (Swedish): private, never published.
+CLAUDE.md
+docs/*.md
+.claude/
+# Design boards and canvas files: kept private, not part of the repository.
+design/

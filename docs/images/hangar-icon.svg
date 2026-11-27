@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="96" height="96" role="img" aria-label="Hangar">
+  <rect x="0.5" y="0.5" width="47" height="47" rx="11" fill="#151D20" stroke="#2C373C"/>
+  <g transform="translate(7.2 7.2) scale(0.7)" fill="none" stroke-width="3.4">
+    <path d="M7 15V7h8M33 7h8v8M41 33v8h-8M15 41H7v-8" stroke="#E8EDEB" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M18 15v18M30 15v18" stroke="#4FD69C" stroke-linecap="round"/>
+    <path d="M21 24h6" stroke="#4FD69C"/>
+  </g>
+</svg>

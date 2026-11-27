@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm ci
+      - name: Type check (frontend)
+        run: npm run check
+      - name: Build frontend (needed by tauri::generate_context!)
+        run: npm run build
+      - name: Rust unit tests (temp folders only, no DCS needed)
+        working-directory: app/src-tauri
+        run: cargo test --lib
+      - name: Release exe
+        run: npx tauri build --no-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hangar-exe
+          path: app/src-tauri/target/release/hangar.exe

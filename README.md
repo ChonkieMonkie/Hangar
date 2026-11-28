@@ -74,7 +74,7 @@ The code is Tauri 2 (Rust) with a Svelte 5 frontend.
 
 ## Project status
 
-Version 0.3.0, in active development, Windows only. Planned next: editing DCS graphics settings with presets.
+Version 0.3.1, in active development, Windows only. Planned next: editing DCS graphics settings with presets.
 
 ## Contributing
 

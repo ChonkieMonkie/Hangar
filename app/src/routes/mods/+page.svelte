@@ -6,12 +6,12 @@
 -->
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import Icon from "$lib/components/Icon.svelte";
-  import Switch from "$lib/components/Switch.svelte";
-  import { api, type ModsOverview, type ModView, type Settings } from "$lib/api";
-  import { bytes, when } from "$lib/format";
-  import { hangar, loadSettings, saveSettings } from "$lib/state.svelte";
-  import { Selection, selectionKeys, nameList } from "$lib/selection.svelte";
+  import Icon from "#lib/components/Icon.svelte";
+  import Switch from "#lib/components/Switch.svelte";
+  import { api, type ModsOverview, type ModView, type Settings } from "#lib/api.ts";
+  import { bytes, when } from "#lib/format.ts";
+  import { hangar, loadSettings, saveSettings } from "#lib/state.svelte.ts";
+  import { Selection, selectionKeys, nameList } from "#lib/selection.svelte.ts";
 
   let ov = $state<ModsOverview | null>(null);
   let error = $state<string | null>(null);
@@ -139,7 +139,7 @@
     const names = new Set(chosen.map((m) => m.name));
     return chosen.filter((m) => m.conflicts.length).map((m) => `${m.name} ↔ ${m.conflictsWith.filter((n) => names.has(n) || (ov?.mods ?? []).some((x) => x.enabled && x.name === n)).join(", ") || m.conflictsWith.join(", ")}`);
   });
-  function batchMessage(verb: string, r: import("$lib/api").BatchReport): string {
+  function batchMessage(verb: string, r: import("#lib/api.ts").BatchReport): string {
     const parts = [`${verb} ${r.done.length} ${r.done.length === 1 ? "mod" : "mods"}.`];
     if (r.skipped.length) parts.push(`Skipped ${r.skipped.length}: ${nameList(r.skipped.map(([id, why]) => `${ov?.mods.find((m) => m.id === id)?.name ?? id} (${why})`), 3)}.`);
     if (r.failed.length) parts.push(`Stopped at ${ov?.mods.find((m) => m.id === r.failed[0][0])?.name ?? r.failed[0][0]}: ${r.failed[0][1]}`);

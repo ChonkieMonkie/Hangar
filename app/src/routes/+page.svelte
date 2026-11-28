@@ -7,10 +7,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import Icon from "$lib/components/Icon.svelte";
-  import { api, type DcsLog } from "$lib/api";
-  import { gb, moduleName, isTerrain, duration } from "$lib/format";
-  import { hangar, currentInstall, savedGamesDcs, loadWallPicture } from "$lib/state.svelte";
+  import Icon from "#lib/components/Icon.svelte";
+  import { api, type DcsLog } from "#lib/api.ts";
+  import { gb, moduleName, isTerrain, duration } from "#lib/format.ts";
+  import { hangar, currentInstall, savedGamesDcs, loadWallPicture } from "#lib/state.svelte.ts";
 
   let install = $derived(currentInstall());
   let log = $state<DcsLog | null>(null);

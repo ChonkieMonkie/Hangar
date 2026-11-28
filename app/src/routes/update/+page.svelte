@@ -5,12 +5,12 @@
   Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
 -->
 <script lang="ts">
-  import Icon from "$lib/components/Icon.svelte";
-  import LineChart from "$lib/components/LineChart.svelte";
-  import { api } from "$lib/api";
-  import { mb, gb, duration, clock, finishAt } from "$lib/format";
-  import Switch from "$lib/components/Switch.svelte";
-  import { hangar, currentInstall, loadSettings, saveSettings } from "$lib/state.svelte";
+  import Icon from "#lib/components/Icon.svelte";
+  import LineChart from "#lib/components/LineChart.svelte";
+  import { api } from "#lib/api.ts";
+  import { mb, gb, duration, clock, finishAt } from "#lib/format.ts";
+  import Switch from "#lib/components/Switch.svelte";
+  import { hangar, currentInstall, loadSettings, saveSettings } from "#lib/state.svelte.ts";
 
   async function setMinimize(on: boolean) {
     const s = structuredClone($state.snapshot(hangar.settings ?? (await loadSettings())));

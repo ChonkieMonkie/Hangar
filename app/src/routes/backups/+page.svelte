@@ -6,12 +6,12 @@
 -->
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import Icon from "$lib/components/Icon.svelte";
-  import Switch from "$lib/components/Switch.svelte";
-  import { api, type BackupOverview, type FileRow, type Settings, type SnapshotInfo, type TopFolder } from "$lib/api";
-  import { bytes, when } from "$lib/format";
-  import { hangar, loadSettings, saveSettings } from "$lib/state.svelte";
-  import { Selection, selectionKeys, nameList } from "$lib/selection.svelte";
+  import Icon from "#lib/components/Icon.svelte";
+  import Switch from "#lib/components/Switch.svelte";
+  import { api, type BackupOverview, type FileRow, type Settings, type SnapshotInfo, type TopFolder } from "#lib/api.ts";
+  import { bytes, when } from "#lib/format.ts";
+  import { hangar, loadSettings, saveSettings } from "#lib/state.svelte.ts";
+  import { Selection, selectionKeys, nameList } from "#lib/selection.svelte.ts";
 
   let ov = $state<BackupOverview | null>(null);
   let error = $state<string | null>(null);

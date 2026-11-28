@@ -22,7 +22,7 @@ LINES = [
     "Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.",
 ]
 DIRS = ["app/src", "app/src-tauri/src", "app/src-tauri/examples", "tools"]
-FILES = ["app/src-tauri/build.rs", "app/svelte.config.js", "app/vite.config.js"]
+FILES = ["app/src-tauri/build.rs", "app/vite.config.js"]
 EXT = {".rs", ".ts", ".js", ".svelte", ".css", ".html", ".py", ".ps1"}
 
 

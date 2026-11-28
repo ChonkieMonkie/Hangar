@@ -5,10 +5,10 @@
   Free software under the GNU GPL v3 or later, WITHOUT ANY WARRANTY. See LICENSE or <https://www.gnu.org/licenses/>.
 -->
 <script lang="ts">
-  import Icon from "$lib/components/Icon.svelte";
-  import { api, type DcsLog, type LogGroup } from "$lib/api";
-  import { duration, gb } from "$lib/format";
-  import { hangar, savedGamesDcs } from "$lib/state.svelte";
+  import Icon from "#lib/components/Icon.svelte";
+  import { api, type DcsLog, type LogGroup } from "#lib/api.ts";
+  import { duration, gb } from "#lib/format.ts";
+  import { hangar, savedGamesDcs } from "#lib/state.svelte.ts";
 
   let tab = $state<"dcs" | "updater">("dcs");
   let log = $state<DcsLog | null>(null);

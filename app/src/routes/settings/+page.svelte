@@ -9,11 +9,11 @@
   import { page } from "$app/state";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { getVersion } from "@tauri-apps/api/app";
-  import Icon from "$lib/components/Icon.svelte";
-  import Switch from "$lib/components/Switch.svelte";
-  import { api, type FolderStats, type Settings, type WallThumb, type RecordingsOverview, type ExportSummary, type StorageOverview, type CompressionEstimate } from "$lib/api";
-  import { bytes } from "$lib/format";
-  import { hangar, loadSettings, saveSettings } from "$lib/state.svelte";
+  import Icon from "#lib/components/Icon.svelte";
+  import Switch from "#lib/components/Switch.svelte";
+  import { api, type FolderStats, type Settings, type WallThumb, type RecordingsOverview, type ExportSummary, type StorageOverview, type CompressionEstimate } from "#lib/api.ts";
+  import { bytes } from "#lib/format.ts";
+  import { hangar, loadSettings, saveSettings } from "#lib/state.svelte.ts";
 
   let s = $state<Settings | null>(null);
   let stats = $state<FolderStats[]>([]);

@@ -13,14 +13,14 @@
   import "@fontsource/chakra-petch/700.css";
   import "@fontsource/jetbrains-mono/400.css";
   import "@fontsource/jetbrains-mono/500.css";
-  import "$lib/styles.css";
+  import "#lib/styles.css";
 
   import { onMount } from "svelte";
   import { page } from "$app/state";
-  import Icon from "$lib/components/Icon.svelte";
-  import JobBar from "$lib/components/JobBar.svelte";
-  import { hangar, startHangar, currentInstall } from "$lib/state.svelte";
-  import { api } from "$lib/api";
+  import Icon from "#lib/components/Icon.svelte";
+  import JobBar from "#lib/components/JobBar.svelte";
+  import { hangar, startHangar, currentInstall } from "#lib/state.svelte.ts";
+  import { api } from "#lib/api.ts";
 
   let { children } = $props();
 

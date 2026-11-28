@@ -6,7 +6,7 @@
 -->
 <script lang="ts">
   // Progress of the background job (backup, verify, restore, mod moves). Shown on every screen.
-  import { hangar } from "$lib/state.svelte";
+  import { hangar } from "#lib/state.svelte.ts";
   let j = $derived(hangar.job);
   let pct = $derived(j && j.total > 0 ? Math.min(100, Math.round((j.done / j.total) * 100)) : null);
 </script>

@@ -286,7 +286,9 @@ pub struct RecordingsOverview {
 }
 
 fn stamp_of(p: &Path) -> Option<String> {
-    p.file_stem()?.to_string_lossy().strip_prefix("run-").map(str::to_string)
+    // "run-YYYYMMDD-HHMMSS" or, for a second recording in the same second, "...-2"
+    let stem = p.file_stem()?.to_string_lossy().into_owned();
+    stem.strip_prefix("run-").map(|s| s.chars().take(15).collect())
 }
 
 #[tauri::command]

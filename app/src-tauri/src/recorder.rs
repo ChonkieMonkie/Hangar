@@ -13,7 +13,7 @@
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -41,6 +41,22 @@ pub fn utc_stamp(unix: u64) -> String {
     format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", secs / 3600, secs % 3600 / 60, secs % 60)
 }
 
+/// Creates `run-<stamp>.ndjson`, or `run-<stamp>-2.ndjson` and so on if that name is taken.
+/// Never opens an existing file: two recorders that start in the same second (for example
+/// two Hangar instances before 0.3.1) used to truncate and overwrite each other's file.
+fn create_unique(dir: &Path, stamp: &str) -> Option<(PathBuf, File)> {
+    for n in 1..100u32 {
+        let name = if n == 1 { format!("run-{stamp}.ndjson") } else { format!("run-{stamp}-{n}.ndjson") };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(f) => return Some((path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 pub struct Recorder {
     w: Option<BufWriter<File>>,
     pub path: Option<PathBuf>,
@@ -61,8 +77,7 @@ impl Recorder {
             return Self::disabled();
         }
         let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let path = dir.join(format!("run-{}.ndjson", utc_stamp(unix)));
-        let Ok(f) = File::create(&path) else { return Self::disabled() };
+        let Some((path, f)) = create_unique(&dir, &utc_stamp(unix)) else { return Self::disabled() };
         crate::share::prune(&dir, Some(&path));
         let mut r = Recorder { w: Some(BufWriter::new(f)), path: Some(path) };
         r.write(json!({
@@ -107,5 +122,24 @@ mod tests {
         assert_eq!(utc_stamp(0), "19700101-000000");
         assert_eq!(utc_stamp(1_798_412_461), "20261227-230101");
         assert_eq!(utc_stamp(951_782_400), "20000229-000000");
+    }
+
+    #[test]
+    fn same_second_gets_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("hangar-rec-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, mut fa) = create_unique(&dir, "20261128-010203").unwrap();
+        let (b, mut fb) = create_unique(&dir, "20261128-010203").unwrap();
+        let (c, _) = create_unique(&dir, "20261128-010203").unwrap();
+        assert_eq!(a.file_name().unwrap(), "run-20261128-010203.ndjson");
+        assert_eq!(b.file_name().unwrap(), "run-20261128-010203-2.ndjson");
+        assert_eq!(c.file_name().unwrap(), "run-20261128-010203-3.ndjson");
+        fa.write_all(b"first\n").unwrap();
+        fb.write_all(b"second\n").unwrap();
+        drop((fa, fb));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "first\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "second\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

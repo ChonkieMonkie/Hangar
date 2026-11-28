@@ -66,6 +66,18 @@ mod smoke {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // One Hangar at a time: a second launch brings the running window forward and exits.
+        // Two instances would mean two monitors on the same updater run (both recording,
+        // both minimizing its window) and two writers on settings and backups.
+        // Registered first, as the plugin asks.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(updater::MonitorShared::default())
